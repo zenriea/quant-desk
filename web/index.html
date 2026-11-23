@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400..700&family=JetBrains+Mono:wght@400..700&display=swap">
-  <link rel="stylesheet" href="/static/app.css?v=honest-gates">
+  <link rel="stylesheet" href="/static/app.css?v=replay">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1117'/%3E%3Cpath d='M7 21l6-6 4 4 8-9' stroke='%2379c0ff' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -84,7 +84,7 @@
         <section class="kpis" id="kpis" aria-label="Performance summary"></section>
 
         <section class="card pipeline-card" id="pipeline" tabindex="-1" aria-labelledby="pipeline-heading">
-          <div class="card-h"><h2 id="pipeline-heading">Trading pipeline</h2><div class="spacer"></div><span class="badge" id="pipeline-window">last 7 days</span></div>
+          <div class="card-h"><h2 id="pipeline-heading">Trading pipeline</h2></div>
           <div class="card-b" id="pipeline-body"></div>
         </section>
 
@@ -147,7 +147,7 @@
            <div class="journal-search">
              <label for="journal-search">Search journal</label>
              <input type="search" id="journal-search" placeholder="Title, text, or #record ID" autocomplete="off" maxlength="120" aria-describedby="journal-search-note">
-             <p id="journal-search-note" class="muted">Searches entries loaded in this view.</p>
+             <p id="journal-search-note" class="muted">Searches the whole journal: words, a symbol or strategy name, or #ID for a record.</p>
            </div>
            <div class="filters" id="filters"></div>
            <p id="journal-results" class="journal-results muted" role="status"></p>
@@ -170,6 +170,6 @@
 
   <div id="drawer-root"></div>
   <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
-  <script type="module" src="/static/app.js?v=honest-gates"></script>
+  <script type="module" src="/static/app.js?v=replay"></script>
 </body>
 </html>

@@ -20,6 +20,7 @@ from ..research.observe import observe
 from ..research.sandbox import python_strategies_allowed
 from ..research.strategy import SpecError, describe_rules, spec_hash
 from ..trading import ledger
+from ..units import describe_drawdown_limit, normalize_invalidation
 from . import journal
 from .analyst import RulesAnalyst, get_analyst, memory, spec_from_llm
 from .llm import BudgetExceeded, LLMError
@@ -70,6 +71,30 @@ def _prior_test_windows(venue: str, days: int) -> list[tuple[int, int]]:
         if w and "test" in w:
             out.append((w["test"]["start"], w["test"]["end"]))
     return out
+
+
+def lifetime_reuse_counts() -> dict[int, int]:
+    """For every experiment: how many EARLIER experiments on its venue tested overlapping dates, over the whole
+    history. The deflation count only looks back ``research.deflation_window_days``; this is the full reuse."""
+    rows = [(r["id"], r["venue"], db.loads(r["windows"], {}) or {}) for r in db.q(
+        "SELECT id, venue, windows FROM experiments WHERE frozen_at IS NOT NULL AND test IS NOT NULL ORDER BY id")]
+    tests = [(i, v, w["test"]["start"], w["test"]["end"]) for i, v, w in rows if "test" in w]
+    return {i: sum(1 for j, v2, a2, b2 in tests if j < i and v2 == v and a2 <= b and b2 >= a) for i, v, a, b in tests}
+
+
+_PARENT = re.compile(r"\brevision of (?:exp(?:eriment)?)\s*[:#]?\s*(\d+)", re.I)
+
+
+def parent_experiment_id(eid: int, hyp: dict | None) -> int | None:
+    """The experiment this one revises: the recorded link, else the "(revision of exp:47)" the analyst wrote."""
+    hyp = hyp or {}
+    pid = hyp.get("parent_experiment_id")
+    if not pid:
+        m = _PARENT.search(hyp.get("title") or "") or _PARENT.search(hyp.get("rationale") or "")
+        pid = int(m.group(1)) if m else None
+    if pid and pid < eid and db.q1("SELECT 1 FROM experiments WHERE id=?", (pid,)):
+        return pid
+    return None
 
 
 def bar_clock(venue: str) -> dict:
@@ -438,6 +463,7 @@ def ranked_candidates(since: float) -> list[dict]:
     then passed but not allocated, then probe-eligible, then the rest; ties by test return.
     The API pipeline, the UI verdict and the worker status all read this one order."""
     out = []
+    lifetime = lifetime_reuse_counts()
     for r in db.q("SELECT e.*, h.title FROM experiments e JOIN hypotheses h ON h.id=e.hypothesis_id "
                   "WHERE e.created_at>=? ORDER BY e.id DESC", (since,)):
         e = dict(r)
@@ -450,6 +476,7 @@ def ranked_candidates(since: float) -> list[dict]:
         out.append({"id": e["id"], "title": e["title"], "venue": e["venue"], "status": e["status"],
                     "test_return": t["total_return"], "sharpe": t.get("sharpe"), "trades": t.get("n_trades"),
                     "holdout_reuse_count": leakage.get("holdout_reuse_count"),
+                    "holdout_reuse_lifetime": lifetime.get(e["id"]),
                     "deflation_window_days": leakage.get("deflation_window_days"),
                     "failed": g.get("failed") or [], "n_checks": len(g.get("checks") or []) or 9,
                     "passed": e["status"] == "passed", "allocated": bool(live),
@@ -633,7 +660,7 @@ def create_strategy(hid, eid, prop, spec, res, dec, author, call_id, probe: bool
     fixed = dict(spec, fixed_params=res["chosen_params"])
     expectations = {"test": t, "validation": res["validation"], "windows": res["windows"],
                     "bars_per_year": None, "chosen_params": res["chosen_params"]}
-    inval = dec.get("invalidation") or {}
+    inval = normalize_invalidation(dec.get("invalidation"))  # the review compares a fraction: store one
     now = clock.now()
     sid = db.ex("INSERT INTO strategies(hypothesis_id, experiment_id, name, version, venue, spec, spec_hash, status, "
                 "approved_allocation, allocation, thesis, exit_plan, expectations, invalidation, created_at, activated_at, "
@@ -659,7 +686,8 @@ def create_strategy(hid, eid, prop, spec, res, dec, author, call_id, probe: bool
                     "." if probe else f" (incubation size, {rs['incubation_fraction']:.0%})."))
     journal.write("decision", title,
                   f"Approved ${approved:,.0f}. {start}{note}\nThesis: {dec.get('thesis')}\n"
-                  f"Exit plan: {dec.get('exit_plan')}\nInvalidation: {inval}",
+                  f"Exit plan: {dec.get('exit_plan')}\nInvalidation: {describe_drawdown_limit(inval)}"
+                  + (f"; {inval['conditions']}" if inval.get("conditions") else "") + ".",
                   refs={"strategy_id": sid, "experiment_id": eid, **({"probe": True} if probe else {})},
                   author=author, llm_call_id=call_id)
     return sid

@@ -86,7 +86,8 @@ HYPOTHESIS_SCHEMA = {
         "rationale": {"type": "string"},
         "prediction": {"type": "string"},
         "falsification": {"type": "string"},
-        "parent_experiment_id": NULL_INT,
+        "parent_experiment_id": {**NULL_INT, "description": "The id of the experiment this idea revises "
+                                                            "(e.g. 47 for a revision of exp:47); null for a new idea."},
         "spec": {"anyOf": [SPEC_SCHEMA, {"type": "null"}]},
     },
 }
@@ -110,7 +111,10 @@ DECISION_SCHEMA = {
         "exit_plan": {"type": "string"},
         "invalidation": {"type": "object", "additionalProperties": False,
                          "required": ["max_live_drawdown_pct", "review_after_days", "min_trades_before_judging", "conditions"],
-                         "properties": {"max_live_drawdown_pct": {"type": "number"},
+                         "properties": {"max_live_drawdown_pct": {
+                                            "type": "number",
+                                            "description": "Positive FRACTION of the sleeve's peak equity, e.g. 0.05 "
+                                                           "for a 5% drawdown limit (not 5, not -0.05)."},
                                         "review_after_days": {"type": "integer"},
                                         "min_trades_before_judging": {"type": "integer"},
                                         "conditions": {"type": "string"}}},

@@ -29,12 +29,44 @@ def write(kind: str, title: str, body: str, refs: dict | None = None, author: st
     return jid
 
 
-def recent(limit: int = 100, after_id: int = 0, kinds: list[str] | None = None) -> list[dict]:
+def _like(word: str) -> str:
+    return "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def search_clause(query: str) -> tuple[str, list]:
+    """Every word must match. ``#12`` matches an entry that references record 12 (any kind) or model call 12;
+    other words match the title, body, kind, author or a referenced record type (``strategy``, ``experiment``)."""
+    parts, params = [], []
+    for word in query.lower().split()[:8]:
+        if word.startswith("#") and word[1:].isdigit():
+            parts.append("(EXISTS (SELECT 1 FROM json_each(journal.refs) WHERE json_each.type IN ('integer', 'text') "
+                         "AND CAST(json_each.value AS TEXT) = ?) OR llm_call_id = ?)")
+            params += [str(int(word[1:])), int(word[1:])]
+            continue
+        like = _like(word)
+        key = like[1:]  # a record type: "strategy" matches the strategy_id key
+        parts.append("(lower(title) LIKE ? ESCAPE '\\' OR lower(body) LIKE ? ESCAPE '\\' OR kind LIKE ? ESCAPE '\\' "
+                     "OR replace(author, '_', ' ') LIKE ? ESCAPE '\\' "
+                     "OR EXISTS (SELECT 1 FROM json_each(journal.refs) WHERE json_each.key LIKE ? ESCAPE '\\'))")
+        params += [like, like, like, like, key]
+    return " AND ".join(parts), params
+
+
+def recent(limit: int = 100, after_id: int = 0, kinds: list[str] | None = None, query: str | None = None,
+           before_id: int | None = None) -> list[dict]:
     sql = "SELECT * FROM journal WHERE id>?"
     params: list = [after_id]
+    if before_id:
+        sql += " AND id<?"
+        params.append(before_id)
     if kinds:
         sql += f" AND kind IN ({','.join('?' * len(kinds))})"
         params += kinds
+    if query and query.strip():
+        clause, qp = search_clause(query)
+        if clause:
+            sql += " AND " + clause
+            params += qp
     sql += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
     return [db.row_dict(r, ["refs"]) for r in db.q(sql, params)]

@@ -394,3 +394,20 @@ def test_ask_stream_reports_progress_and_lands_in_history(client):
     assert [h["question"] for h in hist[:2]] == ["Why cash?", "What are you researching right now?"]
     assert [h["question"] for h in client.get(f"/api/questions?before_id={hist[0]['id']}").json()][:1] == \
         ["What are you researching right now?"]
+
+
+def test_journal_search_covers_the_full_history(client):
+    from quantdesk.agent import journal
+    old = journal.write("decision", "Rejected: crypto breakout", "spread 50% wider", refs={"experiment_id": 12})
+    journal.write("review", "Review: keeping gap_fade", "fine", refs={"strategy_id": 5, "probe": True})
+    for i in range(30):
+        journal.write("system", f"noise {i}", "nothing")
+    client.post("/api/login", json={"password": "correct horse"})
+    get = lambda **p: [j["id"] for j in client.get("/api/journal", params={"limit": 5, **p}).json()]
+    assert old not in get()                                  # outside the loaded window
+    assert get(q="crypto breakout") == [old]                 # every word must match
+    assert get(q="#12") == [old] and get(q="experiment #12") == [old]
+    assert get(q="#1") == []                                 # a boolean ref is not record 1
+    assert get(q="strategy gap_fade") and get(q="50%") == [old] and get(q="%") == [old] and get(q="5_%") == []
+    assert get(q="crypto", kind="review") == []
+    assert get(before_id=old + 3, limit=50) == [old + 2, old + 1, old]

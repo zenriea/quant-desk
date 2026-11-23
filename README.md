@@ -19,17 +19,17 @@ virtual money.
 |---|---|
 | Top bar | PAPER badge, analyst mode (AI model and provider, or **DEMO rules engine**), data mode, worker health, NASDAQ session and countdown, API spend vs. budget, Pause / Emergency stop |
 | KPIs | Equity, P&L **after costs**, exposure and drawdown vs. their limits |
-| Trading pipeline | One sentence on why the desk is or is not trading (naming a closed market when every live strategy is on it), the last 7 days as a funnel (tested → profitable on test → passed gates → live → positions), the ideas closest to trading with a **Start manual probe** button, and which gates block ideas most often |
+| Trading pipeline | One sentence on why the desk is or is not trading (naming a closed market when every live strategy is on it), research over the last 7 days (tested → profitable on test → passed gates) next to trading now (funded strategies, probes, open positions), the ideas closest to trading with a **Start manual probe** button, and which gates block ideas most often |
 | Positions | Click a row to see why it entered (written *before* the fill), the exact exit rules, and the exit plan; probe sleeves are labelled |
-| Equity chart | Account vs. QQQ and BTC buy-and-hold of the same $100k, plus excess return and fees |
+| Equity chart | Account vs. QQQ and BTC buy-and-hold of the same $100k, plus excess return, the same comparison against QQQ held at the account's own average exposure (the rest in cash), and fees |
 | Agent activity | Current activity, open orders and scheduled next actions |
 | Beliefs | Current views, each linked to the experiments or trades that support it (beliefs without verifiable evidence are discarded) |
-| Research | Every experiment: hypothesis, frozen rules, train/validation/test split, metrics, stress tests, gate checklist, leakage notes, decision, lessons; re-judge or start a probe from the drawer |
-| Strategies | Live strategies and probes: allocation, live return vs. expectation, slippage, reviews |
+| Research | Every experiment: hypothesis, frozen rules, train/validation/test split, metrics, stress tests, gate checklist, leakage notes, decision, lessons; test-window reuse in the deflation lookback and over the whole history; re-judge, start a probe or compare a revision with the experiment it revises (rules, test dates, costs, gates that flipped) from the drawer |
+| Strategies | Live strategies and probes: allocation, live return vs. expectation, slippage, reviews, and a bar-by-bar replay of paper trading against the frozen rules' backtest |
 | Orders & fills | Intents (with rationale and risk-engine checks) kept separate from simulated fills (with the quote they hit) |
 | Market | Candles with your fills marked, plus the live quote |
 | Limits & system | Operator-only limits grouped as risk, probes, gates and AI budget/schedule, controls, ledger integrity, sandbox isolation, LLM call audit (prompt and response), jobs, audit log |
-| Journal + Ask | Live feed (server-sent events), filterable; questions are answered only from records, with citations |
+| Journal + Ask | Live feed (server-sent events), filterable, searchable across the full history (words, names or `#ID`); repeated waits for one bar collapse into one row; questions are answered only from records, with citations |
 
 ## How the agent works
 
@@ -85,7 +85,10 @@ Observe ─► Investigate ─► Test ─► Challenge ─► Decide ─► Tra
 * **Review** (`agent/review.py`, daily): live P&L vs. the expected band from the test, a shadow
   backtest over the live period (implementation shortfall) and the recorded invalidation
   conditions. A breached drawdown limit always retires the strategy. Increases are allowed only
-  after the minimum live period and only up to the approved amount.
+  after the minimum live period and only up to the approved amount. **Replay live vs. backtest**
+  in a strategy's drawer lines the two up per signal bar and opens on the first bar where they
+  disagree: the rule values paper trading saw, the same rule on today's stored data, when the bar
+  was usable, the expected fill, and the actual fill or the reason there was none.
 
 "Learning" means the research memory. Each prompt includes prior experiments, their outcomes,
 which gates failed and the recorded lessons, and revisions link to their parent experiment. The
@@ -236,7 +239,10 @@ A sustained, timestamped forward-paper record is still required.
   backtest, but at the open + 5 min in paper. Both sides cap each order, entries and exits, at the
   operator's `max_participation` × ADV. Paper cancels a capped exit's remainder and the next
   decision cycle re-issues it, while the backtest carries it to the next bar's open.
-* **Strategy reviews.** `max_live_drawdown_pct` compares current sleeve equity to its
+* **Strategy reviews.** `max_live_drawdown_pct` is a positive fraction (0.05 = 5 %). Analysts have
+  written it as a percentage (`-3.0` for 3 %), which compared with a fractional drawdown never
+  fired; any value above 1 is now read as a percentage, and the worker repairs stored limits at
+  start-up with a journal entry per strategy. It compares current sleeve equity to its
   high-water mark sampled at account snapshots and reviews. For positive sleeve equity,
   allocation changes rescale the peak so adding or removing capital alone is not a drawdown.
   Existing desks start from current allocation and observed equity; earlier peaks are not
@@ -430,7 +436,7 @@ runs.
 These notes come from the original build, when research ran on hourly bars (and daily bars for
 NASDAQ). Research and live decisions now use 15-minute bars; see [US stocks vs. crypto](#us-stocks-vs-crypto).
 
-* **Automated tests: 317 pass** on the current revision (103 at the original build), plus 4 Playwright
+* **Automated tests: 353 pass** on the current revision (103 at the original build), plus 4 Playwright
   browser tests that skip locally without Playwright and run in their own CI job. They cover:
   * ledger math and integrity checks, including split replay
   * split, dividend and unexplained re-adjustment of price history

@@ -39,7 +39,8 @@ def liquidity_arrays(panel: dict, venue: str, lookback: int | None = None):
 
 def run(spec: dict, panel: dict, sig: Signals, costs_cfg: dict, start: int, end: int,
         capital: float = 100_000.0, delay: int = 0, liquidity=None,
-        max_participation: float = 0.01) -> BTResult:
+        max_participation: float = 0.01, events: list | None = None) -> BTResult:
+    """``events``, when given, receives one dict per signal, fill and skipped order (for the live replay)."""
     venue = spec["venue"]
     v = VENUES[venue]
     syms = panel["symbols"]
@@ -78,6 +79,8 @@ def run(spec: dict, panel: dict, sig: Signals, costs_cfg: dict, start: int, end:
                     notional = min(notional, max_participation * adv[t, col])  # same cap as the live simulator
                 if notional <= 1.0:
                     states[col].in_position = False
+                    if events is not None:
+                        events.append({"t": t, "kind": "skip", "side": "buy", "col": col, "reason": "order too small"})
                     continue
                 bps = half_spread + C.impact_bps(notional, adv[t, col], sigma[t, col], costs_cfg)
                 px = C.apply_slippage("buy", px_ref, bps)
@@ -101,6 +104,8 @@ def run(spec: dict, panel: dict, sig: Signals, costs_cfg: dict, start: int, end:
                 states[col].entry_price = px
                 entry_info[col] = {"symbol": syms[col], "entry_ts": int(panel["ts"][t]), "entry_px": px,
                                    "qty": q, "entry_bar": t}
+                if events is not None:
+                    events.append({"t": t, "kind": "fill", "side": "buy", "col": col, "px": float(px), "qty": float(q)})
             elif action == "sell" and qty[col] > 0:
                 q = qty[col]
                 if np.isfinite(adv[t, col]) and q * px_ref > max_participation * adv[t, col]:
@@ -118,6 +123,9 @@ def run(spec: dict, panel: dict, sig: Signals, costs_cfg: dict, start: int, end:
                 cash += proceeds
                 fees_paid += fee
                 slip_paid += q * (px_ref - px)
+                if events is not None:
+                    events.append({"t": t, "kind": "fill", "side": "sell", "col": col, "px": float(px), "qty": float(q),
+                                   "reason": reason})
                 info = entry_info.setdefault(col, {})
                 info["_proceeds"] = info.get("_proceeds", 0.0) + proceeds
                 info.setdefault("_basis", cost_basis[col])
@@ -147,6 +155,13 @@ def run(spec: dict, panel: dict, sig: Signals, costs_cfg: dict, start: int, end:
         sub_states = [states[c] for c in cols]
         res = step(spec, sub_states, t, sub, cls[t, cols])
         due = t + 1 + delay
+        if events is not None:
+            for k, reason in res.exit:
+                events.append({"t": t, "kind": "signal", "side": "sell", "col": cols[k], "reason": reason,
+                               "executes": due < end})
+            for k in res.enter:
+                events.append({"t": t, "kind": "signal", "side": "buy", "col": cols[k], "reason": "entry",
+                               "executes": due < end})
         if due >= end:
             continue
         for k, reason in res.exit:
@@ -157,6 +172,8 @@ def run(spec: dict, panel: dict, sig: Signals, costs_cfg: dict, start: int, end:
             w = entry_weight(spec, sig.vol[t, col])
             if w <= 0:
                 states[col].in_position = False
+                if events is not None:
+                    events.append({"t": t, "kind": "skip", "side": "buy", "col": col, "reason": "zero target weight"})
                 continue
             pending.setdefault(due, []).append((col, "buy", "entry", w))
 
