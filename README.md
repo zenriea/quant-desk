@@ -19,17 +19,17 @@ virtual money.
 |---|---|
 | Top bar | PAPER badge, analyst mode (AI model and provider, or **DEMO rules engine**), data mode, worker health, NASDAQ session and countdown, API spend vs. budget, Pause / Emergency stop |
 | KPIs | Equity, P&L **after costs**, exposure and drawdown vs. their limits |
-| Trading pipeline | One sentence on why the desk is or is not trading (naming a closed market when every live strategy is on it), the last 7 days as a funnel (tested → profitable on test → passed gates → live → positions), the ideas closest to trading with a **Start manual probe** button, and which gates block ideas most often |
+| Trading pipeline | One sentence on why the desk is or is not trading (naming a closed market when every live strategy is on it), research over the last 7 days (tested → profitable on test → passed gates) next to trading now (funded strategies, probes, open positions), the ideas closest to trading with a **Start manual probe** button, and which gates block ideas most often |
 | Positions | Click a row to see why it entered (written *before* the fill), the exact exit rules, and the exit plan; probe sleeves are labelled |
-| Equity chart | Account vs. QQQ and BTC buy-and-hold of the same $100k, plus excess return and fees |
+| Equity chart | Account vs. QQQ and BTC buy-and-hold of the same $100k, plus excess return, the same comparison against benchmarks held at the account's own exposure (its stock share in QQQ, its crypto share in BTC, the rest in cash, from the previous snapshot; not shown when a needed benchmark price is missing), and fees |
 | Agent activity | Current activity, open orders and scheduled next actions |
 | Beliefs | Current views, each linked to the experiments or trades that support it (beliefs without verifiable evidence are discarded) |
-| Research | Every experiment: hypothesis, frozen rules, train/validation/test split, metrics, stress tests, gate checklist, leakage notes, decision, lessons; re-judge or start a probe from the drawer |
-| Strategies | Live strategies and probes: allocation, live return vs. expectation, slippage, reviews |
+| Research | Every experiment: hypothesis, frozen rules, train/validation/test split, metrics, stress tests, gate checklist, leakage notes, decision, lessons; test-window reuse in the deflation lookback and over the whole history; re-judge, start a probe or compare a revision with the experiment it revises (rules, test dates, costs, gates that flipped) from the drawer |
+| Strategies | Live strategies and probes: allocation, live return vs. expectation, slippage, reviews, and a bar-by-bar replay of paper trading against the frozen rules' backtest |
 | Orders & fills | Intents (with rationale and risk-engine checks) kept separate from simulated fills (with the quote they hit) |
 | Market | Candles with your fills marked, plus the live quote |
 | Limits & system | Operator-only limits grouped as risk, probes, gates and AI budget/schedule, controls, ledger integrity, sandbox isolation, LLM call audit (prompt and response), jobs, audit log |
-| Journal + Ask | Live feed (server-sent events), filterable; questions are answered only from records, with citations |
+| Journal + Ask | Live feed (server-sent events), filterable, searchable across the full history (words, names or `#ID`); repeated waits for one bar collapse into one row; questions are answered only from records, with citations |
 
 ## How the agent works
 
@@ -85,7 +85,15 @@ Observe ─► Investigate ─► Test ─► Challenge ─► Decide ─► Tra
 * **Review** (`agent/review.py`, daily): live P&L vs. the expected band from the test, a shadow
   backtest over the live period (implementation shortfall) and the recorded invalidation
   conditions. A breached drawdown limit always retires the strategy. Increases are allowed only
-  after the minimum live period and only up to the approved amount.
+  after the minimum live period and only up to the approved amount. **Replay live vs. backtest**
+  in a strategy's drawer lines the two up per signal bar and opens on the first bar where they
+  disagree, either in the signal or in the fill (a paper buy the risk engine rejected while the
+  backtest filled counts): the rule values paper trading saw, the same rule on today's stored data,
+  when the bar was usable, the expected fill, and the actual fill or the reason there was none.
+  An order still open, or a backtest fill that falls after the window, is "fill pending": neither a
+  match nor a divergence. **Replay to this review** cuts it at a review's timestamp: signals only
+  from bars published by then (bar close plus the 16-minute stock feed delay), fills only at opens
+  that had happened, and a bar still in progress is marked at its open, so no later price moves it.
 
 "Learning" means the research memory. Each prompt includes prior experiments, their outcomes,
 which gates failed and the recorded lessons, and revisions link to their parent experiment. The
@@ -230,13 +238,26 @@ A sustained, timestamped forward-paper record is still required.
   *inferred* from re-adjusted price history rather than read from a corporate-actions feed, and only
   standard ratios are applied automatically (anything else is flagged for you).
 * **Cost parameters are assumptions.** Verify the SEC Section 31 rate (it changes) and your fee tier.
-* **Backtest/paper execution differences.** Stock backtests fill at the open two bars after the
-  signal bar, which is about two minutes before paper can act (the bar arrives 16 minutes after its
-  close). Signals from a session's last bar fill at the second bar of the next session in the
-  backtest, but at the open + 5 min in paper. Both sides cap each order, entries and exits, at the
+* **Backtest/paper execution differences.** A backtest fills a signal at the first bar open at or
+  after the moment the signal bar was usable: its close for crypto, its close + 16 minutes (the
+  free-plan SIP delay) for stocks. A stock bar closing at 10:15 ET is usable at 10:31, so its signal
+  fills at the 10:45 open; a signal on a session's last bar (usable at 16:16) fills at the next
+  trading day's 9:30 open, while paper acts at the open + 5 min. The same rule drives research
+  experiments, the daily review's shadow backtest and the live replay. Both sides cap each order, entries and exits, at the
   operator's `max_participation` × ADV. Paper cancels a capped exit's remainder and the next
   decision cycle re-issues it, while the backtest carries it to the next bar's open.
-* **Strategy reviews.** `max_live_drawdown_pct` compares current sleeve equity to its
+* **Fill timing before 2026-11-23.** Earlier experiments filled stock signals at the open two bars
+  after the signal bar: a 10:00 bar's signal filled at 10:30, a minute before that bar was published,
+  and a session's last-bar signal filled at the next session's second bar. Their stored results are
+  kept as they ran and are not recomputed. Newer experiments store the rule they ran under
+  (`leakage.execution_timing`, version 2); older ones have none, and the experiment drawer labels
+  each. Re-judging reuses stored results, so compare across the change only by re-running an idea.
+* **Strategy reviews.** `max_live_drawdown_pct` is a positive fraction (0.05 = 5 %). Analysts have
+  written it as a percentage (`-3.0` for 3 %), which compared with a fractional drawdown never
+  fired. Any value above 1 is now read as a percentage wherever the limit is enforced or shown;
+  stored records keep what the analyst wrote. A new strategy whose limit is still unusable (0,
+  missing, above 100 %) is funded with the rules engine's limit instead, 1.5x the sealed test's
+  max drawdown within 5-25 %, and its journal entry says so. It compares current sleeve equity to its
   high-water mark sampled at account snapshots and reviews. For positive sleeve equity,
   allocation changes rescale the peak so adding or removing capital alone is not a drawdown.
   Existing desks start from current allocation and observed equity; earlier peaks are not
@@ -430,7 +451,7 @@ runs.
 These notes come from the original build, when research ran on hourly bars (and daily bars for
 NASDAQ). Research and live decisions now use 15-minute bars; see [US stocks vs. crypto](#us-stocks-vs-crypto).
 
-* **Automated tests: 317 pass** on the current revision (103 at the original build), plus 4 Playwright
+* **Automated tests: 353 pass** on the current revision (103 at the original build), plus 4 Playwright
   browser tests that skip locally without Playwright and run in their own CI job. They cover:
   * ledger math and integrity checks, including split replay
   * split, dividend and unexplained re-adjustment of price history

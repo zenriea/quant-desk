@@ -18,7 +18,30 @@ export function equityComparison(rows, lastFillTs = null) {
       !Number.isFinite(last.equity) || !(last.benchmark_equity > 0)) return null;
   const account = last.equity / first.equity - 1, benchmark = last.benchmark_equity / first.benchmark_equity - 1;
   const uninvested = rows.every((r) => !(r.gross > 0)) && !(lastFillTs >= first.ts);
-  return { account, benchmark, difference: account - benchmark, uninvested };
+  // The benchmarks at the desk's own exposure: between snapshots, hold the previous snapshot's stock share
+  // of equity in the stock benchmark (QQQ), its crypto share in BTC, and the rest in cash.
+  // A benchmark price missing where the account held that asset class leaves the comparison unknown,
+  // not flat: `matched` is then null rather than a silently cash-like number.
+  let matched = 1, stockW = 0, cryptoW = 0, span = 0, missing = new Set();
+  const move = (a, b, key, w) => {
+    if (!(w > 0)) return 0;
+    if (a[key] > 0 && b[key] > 0) return b[key] / a[key] - 1;
+    missing.add(key); return 0;
+  };
+  for (let i = 0; i + 1 < rows.length; i++) {
+    const a = rows[i], b = rows[i + 1], dt = b.ts - a.ts;
+    if (!(dt > 0)) continue;
+    const eq = a.equity > 0 ? a.equity : 0;
+    const crypto = eq && a.crypto_gross > 0 ? Math.min(1, a.crypto_gross / eq) : 0;
+    const stock = eq && a.gross > 0 ? Math.min(1 - crypto, Math.max(0, (a.gross - (a.crypto_gross || 0)) / eq)) : 0;
+    matched *= 1 + stock * move(a, b, "benchmark_equity", stock) + crypto * move(a, b, "crypto_benchmark_equity", crypto);
+    stockW += stock * dt; cryptoW += crypto * dt; span += dt;
+  }
+  const stockExposure = span > 0 ? stockW / span : 0, cryptoExposure = span > 0 ? cryptoW / span : 0;
+  return { account, benchmark, difference: account - benchmark, uninvested,
+           avgExposure: stockExposure + cryptoExposure, stockExposure, cryptoExposure,
+           matchedMissing: [...missing].map((k) => k === "benchmark_equity" ? "stock" : "crypto"),
+           matched: missing.size ? null : matched - 1, matchedDifference: missing.size ? null : account - (matched - 1) };
 }
 
 export function showAnnualizedReturn(window) {
@@ -48,6 +71,20 @@ export function journalMatches(entry, query) {
   if (entry.llm_call_id) refs.push("model inputs", `#${entry.llm_call_id}`);
   const text = [title, entry.title, entry.body, kind, String(entry.author ?? "").replaceAll("_", " "), ...refs].map(friendlyGates).join(" ").toLowerCase();
   return query.toLowerCase().trim().split(/\s+/).every((word) => text.includes(word));
+}
+
+// "<strategy>: waiting for the <time> <bar> bar" is written once per strategy for the same bar.
+// Consecutive ones for one bar read as one row: which bar, and who is waiting for it.
+const WAITING = /^(.+): waiting for the (.+ bar)$/;
+export function groupJournal(entries) {
+  const out = [];
+  for (const entry of entries) {
+    const m = entry.kind === "data" ? WAITING.exec(String(entry.title ?? "")) : null;
+    const last = out.at(-1);
+    if (m && last?.bar === m[2]) { last.entries.push(entry); last.names.push(m[1]); continue; }
+    out.push(m ? { bar: m[2], entries: [entry], names: [m[1]] } : { entry });
+  }
+  return out.map((item) => item.entries?.length === 1 ? { entry: item.entries[0] } : item);
 }
 
 export function deskHealth(s) {
@@ -93,10 +130,44 @@ export function friendlyGates(text) {
   return String(text ?? "").replace(GATE_RE, (key) => GATE_LABEL[key]);
 }
 // Always counted the same way: how many passed, out of how many.
-export function holdoutLabel(n, days) {
-  if (!Number.isSafeInteger(n) || n < 0) return "Test window overlap unknown";
+export function holdoutLabel(n, days, lifetime) {
+  if (!Number.isSafeInteger(n) || n < 0) {
+    return Number.isSafeInteger(lifetime) && lifetime >= 0 ? `${lifetime} overlapping ${lifetime === 1 ? "test" : "tests"} overall` : "Test window overlap unknown";
+  }
   const scope = Number.isSafeInteger(days) && days > 0 ? `${days}-day lookback` : "lookback not recorded";
-  return `${n} overlapping ${n === 1 ? "test" : "tests"} · ${scope}`;
+  const overall = Number.isSafeInteger(lifetime) && lifetime !== n ? ` · ${lifetime} overall` : "";
+  return `${n} overlapping ${n === 1 ? "test" : "tests"} · ${scope}${overall}`;
+}
+
+// A revision next to the experiment it revises: what changed in the rules, the dates, the costs and the gates.
+const RULE_FIELDS = [["entry", "Entry"], ["exit", "Exit"], ["rank_by", "Rank by"], ["top_k", "Top K"], ["universe", "Universe"],
+  ["params", "Parameter grid"], ["sizing", "Sizing"], ["stop_loss_pct", "Stop loss"], ["take_profit_pct", "Take profit"],
+  ["max_hold_bars", "Max hold (bars)"], ["code", "Custom code"]];
+const stable = (v) => v == null || v === "" ? null : typeof v === "object" ? JSON.stringify(Array.isArray(v) ? v : Object.fromEntries(Object.entries(v).sort())) : v;
+export function compareExperiments(child, parent) {
+  const cs = child.spec || {}, ps = parent.spec || {};
+  const rules = RULE_FIELDS.map(([key, label]) => ({ key, label, parent: ps[key] ?? null, child: cs[key] ?? null,
+    changed: stable(ps[key]) !== stable(cs[key]) })).filter((r) => r.changed || (r.parent ?? r.child) != null);
+  const pu = new Set(ps.universe || []), cu = new Set(cs.universe || []);
+  const universe = { added: [...cu].filter((x) => !pu.has(x)), removed: [...pu].filter((x) => !cu.has(x)) };
+  rules.push({ key: "chosen_params", label: "Chosen on train", parent: parent.chosen_params ?? null, child: child.chosen_params ?? null,
+    changed: stable(parent.chosen_params) !== stable(child.chosen_params) });
+  const pw = parent.windows?.test, cw = child.windows?.test;
+  const overlap = pw && cw ? Math.max(0, Math.min(pw.end, cw.end) - Math.max(pw.start, cw.start)) : 0;
+  const dates = { parent: pw || null, child: cw || null,
+    overlap: pw && cw && cw.end > cw.start ? overlap / (cw.end - cw.start) : null };
+  const METRICS = [["total_return", "Net return"], ["sharpe", "Sharpe"], ["n_trades", "Trades"], ["max_drawdown", "Max drawdown"],
+    ["cost_drag", "Cost drag"], ["fees_paid", "Fees paid"], ["slippage_paid", "Spread + impact paid"], ["exposure", "Exposure"],
+    ["deflated_psr", "Deflated PSR"]];
+  const metrics = METRICS.map(([key, label]) => ({ key, label, parent: parent.test?.[key] ?? null, child: child.test?.[key] ?? null }));
+  const byName = (g) => new Map((g?.checks || []).map((c) => [c.name, c]));
+  const pg = byName(parent.gates), cg = byName(child.gates);
+  const gates = [...new Set([...pg.keys(), ...cg.keys()])].map((name) => {
+    const a = pg.get(name), b = cg.get(name);
+    return { name, parent: a ? a.pass : null, child: b ? b.pass : null, parentValue: a?.value ?? null, childValue: b?.value ?? null,
+      flipped: a != null && b != null && a.pass !== b.pass };
+  });
+  return { rules, universe, dates, metrics, gates };
 }
 
 export function gateCount(total, failed) {

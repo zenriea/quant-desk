@@ -1,11 +1,11 @@
 // QuantDesk UI. Vanilla JS; every server string is escaped before it touches the DOM.
 import { changeDirection, deskHealth, displayedActivity, equityComparison, equityInRange, formatLimit, friendlyGates, fromDisplay, gateCount, gateLabel,
-  checkinSummary, holdoutLabel, journalMatches, journalPresentation, limitUsage, LIMIT_FIELDS, parseSymbols, sameValue, symbolDiff, showAnnualizedReturn, toDisplay, tradingVerdict, UNIT_SUFFIX } from "./ui-model.mjs?v=honest-gates";
+  checkinSummary, compareExperiments, groupJournal, holdoutLabel, journalMatches, journalPresentation, limitUsage, LIMIT_FIELDS, parseSymbols, sameValue, symbolDiff, showAnnualizedReturn, toDisplay, tradingVerdict, UNIT_SUFFIX } from "./ui-model.mjs?v=replay";
 
 const $ = (s, el = document) => el.querySelector(s);
 // Viewers (read-only share) see results, never controls, prompts or limits.
 const isOperator = () => state.role !== "viewer";
-const state = { s: null, journal: [], lastId: 0, filter: new Set(), tab: "research", charts: {}, symbol: null, es: null,
+const state = { s: null, journal: [], search: { query: "", kinds: "", rows: [] }, lastId: 0, filter: new Set(), tab: "research", charts: {}, symbol: null, es: null,
   timers: [], booting: false, role: "operator", researchSort: { key: "id", dir: -1 }, researchRows: null, tabVersion: 0, lastRefresh: null, equityRows: [], equityRange: "all", equityDecimals: 0, tabKey: null };
 
 // ---------------------------------------------------------------- helpers
@@ -388,6 +388,7 @@ function renderKPIs(s) {
   $("#kpis").innerHTML = k.map(([l, v, sub, icon, meter]) => `<div class="kpi"><div class="label">${l}${outlineIcon(icon)}</div><div class="value">${v}</div><div class="sub">${sub}</div>${meter}</div>`).join("");
   $("#performance-stats").innerHTML = `
     <div class="performance-stat"><div class="label">vs. ${esc(a.benchmark_symbol)} buy &amp; hold</div><div class="value" id="equity-difference">–</div><small id="equity-comparison"></small></div>
+    <div class="performance-stat"><div class="label">vs. benchmarks at the same exposure</div><div class="value" id="equity-matched">–</div><small id="equity-matched-note"></small></div>
     <div class="performance-stat"><div class="label">Fees paid</div><div class="value">${money(a.fees_paid, 2)}</div><small>${s.counts.fills} fills · ${s.counts.orders} orders</small></div>
     <div class="performance-stat"><div class="label">Crypto exposure</div><div class="value">${money(a.crypto_gross)}</div><small>Equity high-water mark ${money(a.peak)}</small></div>`;
   renderEquityComparison(equityInRange(state.equityRows, state.equityRange, Date.now() / 1000));
@@ -444,6 +445,14 @@ function renderEquityComparison(rows) {
   $("#equity-comparison").textContent = !comparison ? "Needs two chart snapshots with benchmark values." : comparison.uninvested
     ? `Account held cash all range (no positions, no fills); ${state.s?.account.benchmark_symbol || "QQQ"} ${pct(comparison.benchmark)}.`
     : `Chart range · Account ${pct(comparison.account)} · Benchmark ${pct(comparison.benchmark)}`;
+  // How much of the gap is just sitting in cash: the benchmark scaled to the desk's own exposure.
+  const bs = state.s?.account.benchmark_symbol || "QQQ";
+  $("#equity-matched").textContent = !comparison || comparison.matchedDifference == null ? "–" : pct(comparison.matchedDifference).replace("%", " pp");
+  const mix = comparison ? `Average exposure ${pct(comparison.avgExposure, 1, false)}${comparison.cryptoExposure > 0 ? ` (stocks ${pct(comparison.stockExposure, 1, false)}, crypto ${pct(comparison.cryptoExposure, 1, false)})` : ""}` : "";
+  $("#equity-matched-note").textContent = !comparison ? "" : comparison.matched == null
+    ? `${mix} · not shown: no ${comparison.matchedMissing.map((m) => m === "stock" ? bs : "BTC-USD").join(" or ")} price for part of the range while the account held that asset`
+    : `${mix} · matched benchmark ${pct(comparison.matched)}`;
+  $("#equity-matched-note").title = `Between chart snapshots, the account's stock share of equity is held in ${bs}, its crypto share in BTC-USD, and the rest in cash, using the earlier snapshot's exposure. Approximate: it uses the snapshots shown in the chart range.`;
 }
 function dateSpan(start, end) {
   return day(start) === day(end) ? day(start) : `${day(start)} – ${day(end)}`;
@@ -519,23 +528,29 @@ function renderPipeline(s) {
   const p = s.pipeline;
   if (!p) return;
   const v = tradingVerdict(s);
-  const live = p.live.strategies + p.live.probes;
-  const steps = [
+  const L = p.live;
+  const unalloc = p.passed_unallocated ?? 0;
+  const research = [
     ["Tested", p.finished, `${p.experiments} started`],
     ["Profitable on test", p.profitable, "net of costs"],
-    ["Passed all gates", p.passed, p.live.strategies ? "full allocation" : `${p.passed_unallocated ?? p.passed} passed, not allocated`],
-    ["Live", live, p.live.probes ? `${p.live.probes} probe${p.live.probes === 1 ? "" : "s"} included` : "strategies only"],
+    ["Passed gates", p.passed, unalloc ? `${unalloc} not allocated` : p.passed ? "all allocated" : "none this week"],
+  ];
+  const trading = [
+    ["Strategies", L.strategies, L.strategies ? (L.funded != null && L.approved != null && L.funded < L.approved - 1
+      ? `${money(L.funded)} of ${money(L.approved)}` : `${money(L.funded ?? 0)} funded`) : "none live"],
+    ["Probes", L.probes, L.probes ? `${money(L.probe_funded ?? 0)} on trial` : "none running"],
     ["Positions", s.positions.length, s.open_orders.length ? `${s.open_orders.length} order${s.open_orders.length > 1 ? "s" : ""} pending` : "open now"],
   ];
+  const funnel = (title, steps, goal) => `<section class="funnel-group" aria-label="${esc(title)}"><h3 class="funnel-h">${esc(title)}</h3>
+    <ol class="funnel${goal ? " flat" : ""}">${steps.map(([label, n, sub], i) => `<li class="${n > 0 ? "has" : ""}${goal && i === steps.length - 1 && n > 0 ? " goal" : ""}">
+      <span class="funnel-n num">${n}</span><span class="funnel-label">${label}</span><small title="${esc(sub)}">${esc(sub)}</small></li>`).join("")}</ol></section>`;
   const maxFail = Math.max(1, ...p.gate_failures.map((g) => g.n));
   const probe = p.probe;
   const activeProbes = s.strategies.filter((strategy) => strategy.probe);
   const review = p.review_candidates ?? p.candidates.filter((c) => !c.operator_blocker);
-  $("#pipeline-window").textContent = `last ${p.window_days} days`;
   renderCheckin(s, v);
   $("#pipeline-body").innerHTML = `
-    <ol class="funnel">${steps.map(([label, n, sub], i) => `<li class="${n > 0 ? "has" : ""}${i === steps.length - 1 && n > 0 ? " goal" : ""}">
-      <span class="funnel-n num">${n}</span><span class="funnel-label">${label}</span><small>${esc(sub)}</small></li>`).join("")}</ol>
+    <div class="funnels">${funnel(`Research · last ${p.window_days} days`, research)}${funnel("Trading · now", trading, true)}</div>
     <div class="pipeline-grid">
       <div><h3>Active paper probes</h3>
         ${activeProbes.length ? `<ul class="cands">${activeProbes.map((s) => `<li><div class="cand-main">
@@ -547,7 +562,7 @@ function renderPipeline(s) {
           <div class="cand-main"><a href="#" data-exp="${c.id}">#${c.id} ${esc(c.title)}</a>
             <small>${esc(c.venue)} · Sharpe ${num(c.sharpe)} · ${c.trades ?? "–"} trades · gates ${gateCount(c.n_checks, c.failed.length)}${c.passed && !c.allocated ? " · not allocated" : ""}</small></div>
            <div class="cand-result"><span class="cand-ret num ${signCls(c.test_return)}">Historical ${pct(c.test_return, 1)}</span>
-            <small>${holdoutLabel(c.holdout_reuse_count, c.deflation_window_days)}</small></div>
+            <small>${holdoutLabel(c.holdout_reuse_count, c.deflation_window_days, c.holdout_reuse_lifetime)}</small></div>
            ${c.failed.length ? `<span class="muted cand-gates">Failed: ${c.failed.map((g) => esc(gateLabel(g))).join(", ")}</span>` : ""}
            ${c.operator_blocker ? `<span class="muted cand-action">${esc(c.operator_blocker)}</span>` : !isOperator() ? "" :
              `<button class="btn small cand-action ${c.test_return > 0 && !c.probe_blocker ? "primary" : ""}" data-probe="${c.id}" title="${esc(c.probe_blocker ? "Automatic probe skipped: " + c.probe_blocker : "Start a manual probe now with a small paper allocation")}">Start manual probe…</button>`}</li>`).join("")}</ul>`
@@ -736,7 +751,7 @@ function drawResearch(body = $("#tab-body")) {
     ${th("sharpe", "Sharpe", "r")}${th("trades", "Trades", "r")}${th("gates", "Gates")}</tr></thead><tbody>
     ${sortedResearch(ex).map((e) => `<tr class="clickable" data-exp="${e.id}"><td class="num id-cell">#${e.id}</td><td class="hyp"><a href="#" data-exp="${e.id}">${esc(e.title)}</a><div class="muted cell-sub">${esc(e.venue)} · ${authorLabel(e.author)} · ${ago(e.created_at)}</div></td>
       <td data-label="Status">${expStatus(e.status)}${e.strategy_id ? `<div class="cell-sub"><span class="${e.strategy_probe ? "probe-chip" : "strategy-chip"}">${e.strategy_probe ? `probe #${e.strategy_id} · ${!e.strategy_status || e.strategy_status === "active" ? "forward test" : esc(e.strategy_status)}` : `strategy #${e.strategy_id}${e.strategy_status && e.strategy_status !== "active" ? ` · ${esc(e.strategy_status)}` : ""}`}</span></div>` : ""}</td>
-      <td class="r" data-label="Historical return"><span class="num ${signCls(e.test?.total_return)}">${pct(e.test?.total_return)}</span>${e.test ? `<div class="muted cell-sub">${holdoutLabel(e.leakage?.holdout_reuse_count, e.leakage?.deflation_window_days)}</div>` : ""}</td><td class="r num" data-label="Sharpe">${num(e.test?.sharpe)}</td>
+      <td class="r" data-label="Historical return"><span class="num ${signCls(e.test?.total_return)}">${pct(e.test?.total_return)}</span>${e.test ? `<div class="muted cell-sub">${holdoutLabel(e.leakage?.holdout_reuse_count, e.leakage?.deflation_window_days, e.holdout_reuse_lifetime)}</div>` : ""}</td><td class="r num" data-label="Sharpe">${num(e.test?.sharpe)}</td>
       <td class="r num" data-label="Trades">${e.test?.n_trades ?? "–"}</td><td class="gates" data-label="Gates">${gatesCell(e)}</td></tr>`).join("")}</tbody></table></div>
     <div class="research-note">Open an experiment to see its hypothesis, sealed test and gates${isOperator() ? ", or to start it as a probe" : ""}.</div>`;
   if (sortFocus) body.querySelector(sortFocus)?.focus({ preventScroll: true });
@@ -1096,7 +1111,7 @@ $("#tab-body").addEventListener("click", async (e) => {
 
 // ---------------------------------------------------------------- drawers
 let closeDrawer = null, drawerRequest = 0, drawerOrigin = null;
-const recordRoute = /^#(experiment|strategy|order|llm)-(\d+)$/;
+const recordRoute = /^#(experiment|strategy|order|llm|compare|replay)-(\d+)(?:-(\d+))?$/;
 
 async function drawerRecord(path) {
   const request = ++drawerRequest, hash = location.hash;
@@ -1176,6 +1191,39 @@ function metricsTable(cols, { cagr = false } = {}) {
   return `<div class="metrics-scroll"><div class="tbl-scroll" tabindex="0" role="region" aria-label="Scrollable results table"><table class="tbl metrics-tbl"><thead><tr><th scope="col">Metric</th>${cols.map(([l]) => `<th scope="col" class="r">${esc(l)}</th>`).join("")}</tr></thead><tbody>
     ${rows.filter(([, k]) => cagr || k !== "cagr").map(([l, k, f]) => `<tr><th scope="row">${l}</th>${cols.map(([, m, w]) => `<td class="r num">${m && (k !== "cagr" || showAnnualizedReturn(w)) ? f(m[k]) : "–"}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
 }
+const compareCell = (v) => v == null ? '<span class="muted">–</span>' : typeof v === "object"
+  ? `<code>${esc(Array.isArray(v) ? v.join(", ") : Object.entries(v).map(([k, x]) => `${k}=${Array.isArray(x) ? x.join("/") : x}`).join(" · "))}</code>`
+  : `<code>${esc(v)}</code>`;
+const METRIC_FMT = { total_return: pct, max_drawdown: pct, cost_drag: (x) => pct(x, 2, false), exposure: (x) => pct(x, 0, false),
+  fees_paid: (x) => money(x), slippage_paid: (x) => money(x), sharpe: (x) => num(x), deflated_psr: (x) => num(x, 3), n_trades: (x) => x ?? "–" };
+async function openCompare(id) {
+  const child = await drawerRecord(`/api/experiments/${encodeURIComponent(id)}`);
+  if (!child) return;
+  if (!child.parent_id) { toast(`Experiment #${child.id} is not recorded as a revision`, { tone: "warn" }); return openExperiment(id); }
+  const parent = await api(`/api/experiments/${encodeURIComponent(child.parent_id)}`);
+  const c = compareExperiments(child, parent);
+  const span = (w) => w ? `${dateSpan(w.start, w.end)} · ${Number(w.bars || 0).toLocaleString(LOCALE)} bars` : "–";
+  const gateMark = (pass) => pass == null ? '<span class="muted">–</span>' : pass ? `<span class="gate-pass">${MARK.pass} met</span>` : `<span class="gate-fail">${MARK.fail} missed</span>`;
+  const changedRules = c.rules.filter((r) => r.changed);
+  drawer(`Experiment #${child.id} vs. #${parent.id}`, `
+    <div class="section"><p class="secondary">#${child.id} <b>${esc(child.hypothesis?.title || "")}</b> revises #${parent.id} <b>${esc(parent.hypothesis?.title || "")}</b>.
+      ${changedRules.length ? `${changedRules.length} rule ${changedRules.length === 1 ? "field" : "fields"} changed` : "No rule fields changed"};
+      ${c.gates.filter((g) => g.flipped).length} ${c.gates.filter((g) => g.flipped).length === 1 ? "gate" : "gates"} flipped.</p>
+      <p><a href="#" data-exp="${child.id}">Open #${child.id}</a> · <a href="#" data-exp="${parent.id}">Open #${parent.id}</a></p></div>
+    <div class="section"><h3>Rules</h3><div class="tbl-scroll"><table class="tbl compare-tbl"><thead><tr><th scope="col">Field</th><th scope="col">#${parent.id}</th><th scope="col">#${child.id}</th></tr></thead><tbody>
+      ${c.rules.map((r) => `<tr class="${r.changed ? "changed" : ""}"><th scope="row">${esc(r.label)}${r.changed ? ' <span class="chip-changed">changed</span>' : ""}</th>
+        <td>${r.key === "universe" && r.changed ? `${compareCell(r.parent)}${c.universe.removed.length ? `<div class="muted cell-sub">removed ${esc(c.universe.removed.join(", "))}</div>` : ""}` : compareCell(r.parent)}</td>
+        <td>${r.key === "universe" && r.changed ? `${compareCell(r.child)}${c.universe.added.length ? `<div class="muted cell-sub">added ${esc(c.universe.added.join(", "))}</div>` : ""}` : compareCell(r.child)}</td></tr>`).join("")}</tbody></table></div></div>
+    <div class="section"><h3>Sealed test dates</h3><dl class="spec"><dt>#${parent.id}</dt><dd>${span(c.dates.parent)}</dd><dt>#${child.id}</dt><dd>${span(c.dates.child)}</dd></dl>
+      <p class="muted cell-sub">${c.dates.overlap == null ? "Test windows not recorded." : `${pct(c.dates.overlap, 0, false)} of #${child.id}'s test dates were already in #${parent.id}'s test, and the revision was written after seeing that result.`}
+      #${child.id}'s test window: ${esc(holdoutLabel(child.leakage?.holdout_reuse_count, child.leakage?.deflation_window_days, child.holdout_reuse_lifetime))}.</p></div>
+    <div class="section"><h3>Results and costs (sealed test, net)</h3><div class="tbl-scroll"><table class="tbl compare-tbl"><thead><tr><th scope="col">Metric</th><th scope="col" class="r">#${parent.id}</th><th scope="col" class="r">#${child.id}</th></tr></thead><tbody>
+      ${c.metrics.map((m) => `<tr><th scope="row">${esc(m.label)}</th><td class="r num">${(METRIC_FMT[m.key] || num)(m.parent)}</td><td class="r num">${(METRIC_FMT[m.key] || num)(m.child)}</td></tr>`).join("")}</tbody></table></div></div>
+    <div class="section"><h3>Gates</h3><div class="tbl-scroll"><table class="tbl compare-tbl"><thead><tr><th scope="col">Gate</th><th scope="col">#${parent.id}</th><th scope="col">#${child.id}</th></tr></thead><tbody>
+      ${c.gates.map((g) => `<tr class="${g.flipped ? "changed" : ""}"><th scope="row">${esc(gateLabel(g.name))}${g.flipped ? ' <span class="chip-changed">flipped</span>' : ""}</th>
+        <td>${gateMark(g.parent)} <span class="muted num">${g.parentValue == null ? "" : num(g.parentValue, 3)}</span></td>
+        <td>${gateMark(g.child)} <span class="muted num">${g.childValue == null ? "" : num(g.childValue, 3)}</span></td></tr>`).join("")}</tbody></table></div></div>`, `#compare-${child.id}`);
+}
 async function openExperiment(id) {
   const e = await drawerRecord(`/api/experiments/${encodeURIComponent(id)}`);
   if (!e) return;
@@ -1206,7 +1254,8 @@ async function openExperiment(id) {
     <div><b>${esc(gateLabel(c.name))}</b> ${gateMeasure(c)}<div class="muted cell-sub">${rich(c.why)}</div></div></div>`).join("");
   drawer(`Experiment #${e.id}: ${h.title || ""}`, `
     <div class="section">${expStatus(e.status)} <span class="muted">· ${esc(e.venue)} · created ${dt(e.created_at)} · frozen ${dt(e.frozen_at)} · by ${authorLabel(h.author)}</span>
-      ${e.strategy ? ` · <a href="#" data-strat="${e.strategy.id}">${e.strategy.probe ? "probe" : "strategy"} ${esc(e.strategy.name)} v${e.strategy.version} (${esc(e.strategy.probe && e.strategy.status === "active" ? "forward test" : e.strategy.status)})</a>` : ""}</div>
+      ${e.strategy ? ` · <a href="#" data-strat="${e.strategy.id}">${e.strategy.probe ? "probe" : "strategy"} ${esc(e.strategy.name)} v${e.strategy.version} (${esc(e.strategy.probe && e.strategy.status === "active" ? "forward test" : e.strategy.status)})</a>` : ""}
+      ${e.parent_id ? `<div class="revision-of">Revision of <a href="#" data-exp="${e.parent_id}">experiment #${e.parent_id}</a> <a class="btn small" href="#compare-${e.id}">Compare with #${e.parent_id}</a></div>` : ""}</div>
     ${dec ? `<div class="section"><h3>Decision: ${esc(decision)}</h3>
       ${dec.kind === "reject" && e.strategy?.probe ? '<p class="cell-sub secondary">Not promoted to a regular allocation. The probe is a separate forward paper test.</p>' : ""}
       <details class="record-details"><summary>Decision rationale and lessons</summary>
@@ -1218,7 +1267,7 @@ async function openExperiment(id) {
     ${e.test ? `<div class="section"><h3>Historical screen · net of costs</h3>
       <p class="muted cell-sub">The rules were frozen before this experiment's test. The same dates may have informed earlier experiments, so this is not forward paper evidence.</p><dl class="test-headline">
       <div><dt>Net return</dt><dd>${pct(t.total_return)}</dd></div><div><dt>Max drawdown</dt><dd>${pct(t.max_drawdown)}</dd></div>
-      <div><dt>Historical test window</dt><dd>${holdoutLabel(e.leakage?.holdout_reuse_count, e.leakage?.deflation_window_days)}</dd></div>
+      <div><dt>Historical test window</dt><dd>${holdoutLabel(e.leakage?.holdout_reuse_count, e.leakage?.deflation_window_days, e.holdout_reuse_lifetime)}</dd></div>
       <div><dt>Trades</dt><dd>${t.n_trades ?? "–"}</dd></div></dl>${w?.test ? `<p class="muted cell-sub">${dateSpan(w.test.start, w.test.end)}</p>` : ""}</div>` : ""}
     <div class="section"><h3>Acceptance gates: ${checks.length ? gateCount(checks.length, missed.length) : "not evaluated"}</h3>
       ${g?.first_judged ? `<p class="muted cell-sub">Re-judged. When it first ran: ${gateCount(g.first_judged.checks?.length || 0, g.first_judged.failed?.length || 0)}${g.first_judged.failed?.length ? ` (missed ${esc(g.first_judged.failed.join(", "))})` : ""}.</p>` : ""}
@@ -1242,7 +1291,10 @@ async function openExperiment(id) {
       <dt>Sizing</dt><dd>${kv(spec.sizing)}${spec.stop_loss_pct ? ` · stop ${pct(spec.stop_loss_pct, 0, false)}` : ""}${spec.max_hold_bars ? ` · max hold ${spec.max_hold_bars} bars` : ""}</dd></dl>
       ${spec.kind === "code" ? `<pre class="pre"><code>${esc(spec.code)}</code></pre>` : ""}</div>
     ${tl ? `<div class="section"><h3>Chronological split (test window sealed until the rules were frozen)</h3>${tl}</div>` : ""}</details>
-    ${e.test ? `<details class="record-details section" id="test-details"><summary>Detailed results, benchmarks and stress tests</summary>
+    ${e.test ? `<p class="muted cell-sub section">Fill timing: ${e.leakage?.execution_timing?.version >= 2
+      ? `first bar open at or after the signal bar's close${e.leakage.execution_timing.usable_after_close_seconds ? ` + ${Math.round(e.leakage.execution_timing.usable_after_close_seconds / 60)} min data delay` : ""}.`
+      : `${e.venue === "NASDAQ" ? "open two bars after the signal bar (earlier rule, up to a minute before the bar was published)" : "next bar's open (earlier rule)"}. Stored results are kept as they ran.`}</p>
+    <details class="record-details section" id="test-details"><summary>Detailed results, benchmarks and stress tests</summary>
     <div class="section"><h3>Results (net of fees, spread, impact)</h3>${metricsTable([["Train", e.train, w?.train], ["Validation", e.validation, w?.validation], ["Test", t, w?.test],
       ["Test ×2 costs", ch.test_cost_x2, w?.test], ["Test +1 bar delay", ch.test_delay_1bar, w?.test], [`${t.benchmark_symbol} buy & hold`, t.benchmark_venue, w?.test], ["Universe buy & hold", t.benchmark_universe, w?.test]], { cagr: showAnnualizedReturn(w?.test) })}
       <div class="muted cell-sub" style="margin-top:6px">Probabilistic Sharpe (PSR): ${num(t.psr)} · Deflated PSR: ${num(t.deflated_psr)}. The deflated estimate accounts for trying ${e.leakage?.n_trials_for_deflation ?? "an unknown number of"} ideas (expected best annualised Sharpe from luck: ${num(t.sr_star_annualised)}).</div>
@@ -1280,16 +1332,66 @@ async function openStrategy(id) {
         ${x.pending ? `<span class="sym-pend">${esc(x.pending)} order pending</span>` : ""}</div>`).join("")}</div>
        <div class="muted" style="font-size:12px;margin-top:8px">The rules are checked for every symbol on each 15-minute bar close; it buys whichever symbols signal, sized from its ${money(s.allocation)} allocation.</div></div>
     <div class="section"><h4>Thesis (recorded at approval)</h4><div class="pre">${rich(s.thesis)}</div></div>
-    <div class="section"><h4>Exit plan & invalidation</h4><div class="pre">${rich(s.exit_plan)}</div><div class="secondary small-text" style="margin-top:6px">Invalidation: ${kv(s.invalidation)}</div></div>
+    <div class="section"><h4>Exit plan & invalidation</h4><div class="pre">${rich(s.exit_plan)}</div><div class="secondary small-text" style="margin-top:6px">Invalidation: ${esc(invalidationText(s.invalidation))}</div></div>
     <div class="section"><h4>Rules (frozen)</h4><div style="font-size:13px">Entry <code>${esc(sp.entry || "code")}</code><br>Exit <code>${esc(sp.exit || "code")}</code><br>
       <span class="secondary">params ${kv(sp.fixed_params)}</span></div></div>
-     <div class="section"><h4>Forward paper performance</h4>${s.live.fills === 0
+     <div class="section"><h4>Forward paper performance</h4>
+       <p><a class="btn small" href="#replay-${s.id}">Replay live vs. backtest</a> <span class="muted cell-sub">Bar by bar: what the frozen rules would have done and what paper trading did.</span></p>${s.live.fills === 0
        ? `<p>No fills yet. The ${money(s.allocation)} allocation is a trading budget.</p>`
        : `<div class="secondary">Paper return: ${pct(s.live.return)} over ${s.live.days_live} days on ${money(s.allocation)} · realised ${money(s.live.realized, 2)} ·
       unrealised ${money(s.live.unrealized, 2)} · fees ${money(s.live.fees, 2)} · avg slippage ${s.live.avg_slippage_bps ?? "-"} bp · avg spread ${s.live.avg_spread_bps ?? "-"} bp</div>`}</div>
      <div class="section"><h4>Historical sealed test</h4>${metricsTable([["Sealed test", s.expectations?.test, s.expectations?.windows?.test]], { cagr: showAnnualizedReturn(s.expectations?.windows?.test) })}</div>
-    <div class="section"><h4>Reviews</h4>${(s.reviews || []).map((r) => `<div style="padding:8px 0;border-top:1px solid var(--border)"><b>${esc(r.kind)}</b> <span class="muted">${dt(r.ts)} · ${authorLabel(r.author)}</span>
+    <div class="section"><h4>Reviews</h4>${(s.reviews || []).map((r) => `<div style="padding:8px 0;border-top:1px solid var(--border)"><b>${esc(r.kind)}</b> <span class="muted">${dt(r.ts)} · ${authorLabel(r.author)}</span> · <a href="#replay-${s.id}-${Math.floor(r.ts)}">Replay to this review</a>
       <div class="pre secondary" style="font-size:13px">${rich(r.rationale)}</div></div>`).join("") || `<div class="muted">No reviews yet (daily).</div>`}</div>`, `#strategy-${s.id}`);
+}
+// The same reading of the drawdown limit as the server's (quantdesk/units.py): a fraction, never a percentage.
+function invalidationText(inv = {}) {
+  const raw = Math.abs(Number(inv?.max_live_drawdown_pct));
+  const dd = Number.isFinite(raw) && raw > 0 ? (raw > 1 ? raw / 100 : raw) : null;
+  return [dd && dd <= 1 ? `retire at a ${pct(dd, 1, false)} live drawdown from the sleeve's peak` : "no drawdown limit recorded",
+    inv?.review_after_days ? `review after ${inv.review_after_days} days` : null,
+    inv?.min_trades_before_judging ? `judge after ${inv.min_trades_before_judging} trades` : null,
+    inv?.conditions || null].filter(Boolean).join(" · ");
+}
+const barText = (ts) => ts == null ? "–" : `${dt(ts)} bar`;
+function replaySide(r) {
+  const s = r.shadow, l = r.live;
+  const back = !s ? '<span class="muted">no signal</span>' : s.fill ? `${esc(s.reason)}; fills at the ${esc(dt(s.fill.ts))} open @ ${px(s.fill.px)}`
+    : s.skip ? `${esc(s.reason)}; not filled (${esc(s.skip)})` : !s.executes ? `${esc(s.reason)}; fill falls after the replay window` : esc(s.reason);
+  const paper = !l ? '<span class="muted">no order</span>' : `<a href="#" data-order="${l.order_id}">order #${l.order_id}</a> ${esc(l.status)}${l.fill
+    ? ` @ ${px(l.fill.px)} <span class="muted">(${esc(dt(l.fill.ts))}${l.fill.spread_bps != null ? ` · ${num(l.fill.spread_bps, 1)} bp spread` : ""})</span>`
+    : l.status_note && l.status !== "filled" ? ` <span class="muted">· ${esc(l.status_note)}</span>` : ""}`;
+  return { back, paper };
+}
+// `until`: replay only what was known then (a review's timestamp), so later trades don't blur it.
+async function openReplay(id, until) {
+  const r = await drawerRecord(`/api/strategies/${encodeURIComponent(id)}/replay${until ? `?until=${encodeURIComponent(until)}` : ""}`);
+  if (!r) return;
+  const st = r.strategy, sm = r.summary || {}, rows = r.rows || [];
+  const first = r.first_divergence == null ? null : rows[r.first_divergence];
+  const label = { both: "same", pending: "fill pending", fill_differs: "fill differs", live_only: "paper only", shadow_only: "backtest only" };
+  const delay = r.timing?.data_delay_seconds ? ` + ${Math.round(r.timing.data_delay_seconds / 60)} min data delay` : "";
+  const focus = first ? (() => { const { back, paper } = replaySide(first); return `<div class="section replay-first"><h3>First divergence · ${esc(first.symbol)} ${esc(first.side)}</h3>
+    <dl class="spec"><dt>Signal bar</dt><dd>${esc(barText(first.bar))}</dd>
+      <dt>Usable from</dt><dd>${first.usable_at ? esc(dt(first.usable_at)) : "–"} <span class="muted">(bar close${delay})</span></dd>
+      <dt>Backtest expected</dt><dd>${back}</dd><dt>Paper did</dt><dd>${paper}${first.live?.created_at ? ` <span class="muted">· decided ${esc(dt(first.live.created_at))}</span>` : ""}</dd>
+      ${first.live?.rule_values?.length ? `<dt>Rule values paper saw</dt><dd><ul class="notes">${first.live.rule_values.map((v) => `<li><code>${esc(v)}</code></li>`).join("")}</ul></dd>` : ""}
+      ${first.rule_values_now?.length ? `<dt>Same rule on today's data</dt><dd><ul class="notes">${first.rule_values_now.map((v) => `<li><code>${esc(v)}</code></li>`).join("")}</ul></dd>` : ""}
+      ${(first.nearby_notes || []).length ? `<dt>Around that bar</dt><dd><ul class="notes">${first.nearby_notes.map((n) => `<li><span class="muted num">${esc(clock24(n.ts))}</span> ${esc(n.title)}</li>`).join("")}</ul></dd>` : ""}</dl>
+    <p class="muted cell-sub">${first.match === "fill_differs" ? "Both sides signalled on this bar; only one filled. Paper's order status says why (risk engine, expiry, liquidity)."
+      : "Different rule values on the same bar mean the stored bar changed after paper acted (late or revised data). The same values with no order point at timing: a restart, a data wait or the risk engine."}</p></div>`; })()
+    : `<div class="section"><p>${rows.length ? `Paper trading and the backtest signalled and filled the same way on every bar${r.span?.until ? " up to then" : " so far"}${sm.pending ? `, with ${sm.pending} fill${sm.pending === 1 ? "" : "s"} still pending` : ""}.` : "No signals yet on either side."}</p></div>`;
+  drawer(`Replay: ${st.name} v${st.version}`, `
+    <div class="section"><p class="secondary">${r.span?.bars ?? 0} bars since ${esc(dt(r.span?.start))}. The backtest replays the frozen rules on today's stored bars with modelled costs and fills each signal at the first bar open at or after the signal bar was usable${r.timing?.data_delay_seconds ? ` (its close + ${Math.round(r.timing.data_delay_seconds / 60)} min)` : " (its close)"}.</p>
+      ${r.span?.until ? `<p class="replay-until">Replaying up to <b>${esc(dt(r.span.until))}</b>, as a review then saw it. <a href="#replay-${st.id}">Replay to now</a></p>` : ""}
+      <dl class="test-headline"><div><dt>Same signal and fill</dt><dd>${sm.matched ?? 0}</dd></div><div><dt>Fill pending</dt><dd>${sm.pending ?? 0}</dd></div><div><dt>Fill differs</dt><dd>${sm.fill_differs ?? 0}</dd></div>
+        <div><dt>Paper only</dt><dd>${sm.live_only ?? 0}</dd></div><div><dt>Backtest only</dt><dd>${sm.shadow_only ?? 0}</dd></div><div><dt>Backtest trades</dt><dd>${sm.shadow_trades ?? 0} <span class="muted">${sm.shadow_return == null ? "" : pct(sm.shadow_return)}</span></dd></div></dl>
+      <p><a href="#" data-strat="${st.id}">Back to ${esc(st.name)}</a></p></div>
+    ${focus}
+    ${rows.length ? `<div class="section"><h3>Every decision</h3><div class="tbl-scroll"><table class="tbl replay-tbl"><thead><tr><th scope="col">Signal bar</th><th scope="col">Symbol</th><th scope="col">Side</th><th scope="col">Backtest</th><th scope="col">Paper</th><th scope="col">Match</th></tr></thead><tbody>
+      ${rows.map((x, i) => { const { back, paper } = replaySide(x); return `<tr class="${!["both", "pending"].includes(x.match) ? "diverged" : ""}${i === r.first_divergence ? " first" : ""}">
+        <td class="num">${x.bar == null ? `<span class="muted">${esc(x.live?.reason || "")}</span>` : esc(dt(x.bar))}</td><td>${esc(x.symbol)}</td><td>${esc(x.side)}</td><td>${back}</td><td>${paper}</td>
+        <td><span class="match-${esc(x.match)}">${esc(label[x.match])}</span></td></tr>`; }).join("")}</tbody></table></div></div>` : ""}`, `#replay-${st.id}${until ? `-${Math.floor(until)}` : ""}`);
 }
 async function openOrder(id) {
   const o = await drawerRecord(`/api/orders/${encodeURIComponent(id)}`);
@@ -1391,11 +1493,28 @@ $("#filters").addEventListener("click", async (e) => {
   if (!b.dataset.k) state.filter.clear(); else state.filter.has(b.dataset.k) ? state.filter.delete(b.dataset.k) : state.filter.add(b.dataset.k);
   try { localStorage.setItem(FILTER_STORAGE, JSON.stringify([...state.filter])); } catch {}
   renderFilters(); renderFeed();
+  if ($("#journal-search").value.trim()) searchJournal();
   $(`#filters [data-k="${b.dataset.k}"]`)?.focus({ preventScroll: true });
   $("#feed").scrollTop = 0;
   await loadFilteredJournal();
 });
-$("#journal-search").addEventListener("input", () => { renderFeed(); $("#feed").scrollTop = 0; });
+// Typing filters what is loaded at once; the server then searches the full history.
+let searchTimer = null;
+async function searchJournal() {
+  const query = $("#journal-search").value.trim();
+  const kinds = [...activeKinds()].join(",");
+  if (!query) { state.search = { query: "", kinds: "", rows: [] }; return; }
+  try {
+    const rows = await api(`/api/journal?limit=200&q=${encodeURIComponent(query)}${kinds ? `&kind=${encodeURIComponent(kinds)}` : ""}`);
+    if ($("#journal-search").value.trim() !== query) return;  // a newer search is on its way
+    state.search = { query, kinds, rows };
+    renderFeed();
+  } catch (err) { fail(err, "Could not search the full journal."); }
+}
+$("#journal-search").addEventListener("input", () => {
+  renderFeed(); $("#feed").scrollTop = 0;
+  clearTimeout(searchTimer); searchTimer = setTimeout(searchJournal, 300);
+});
 // The journal reads as a log: one aligned time column, an explicit kind label, then the entry.
 const dayKey = (ts) => new Date(ts * 1000).toDateString();
 function entryHTML(j, fresh) {
@@ -1412,43 +1531,64 @@ function entryHTML(j, fresh) {
     decision?.outcome === "revise" ? "Revision recorded. No regular allocation for these rules." :
     decision?.outcome === "reject" ? "No regular allocation. Any paper probe is a separate decision." : null;
   const hasChecks = Array.isArray(checks) && checks.length > 0;
-  const grounded = hasChecks || !!next;
-  const long = !grounded && (j.body || "").length > 420;
-  const evidence = next ? `<b>Recorded test result</b>
+  // A promotion decision leads with its recorded test result; the analyst's rationale is one click away.
+  // A "no experiment" entry leads with its reason; the recorded trade counts behind it are one click away.
+  const long = !next && (j.body || "").length > 420;
+  const evidence = next ? `<div class="entry-evidence"><b>Recorded test result</b>
     <p>Historical return after costs: ${pct(decision.test_return)} · Trades: ${esc(decision.test_trades ?? "–")}.
     ${decision.gates_passed ? "All gates passed." : `Missed gates: ${decision.failed_gates.map((g) => esc(gateLabel(g))).join(", ")}.`}</p>
-    <p><b>Next:</b> ${next}</p>` :
-    hasChecks ? `<b>Recorded trade counts</b><ul>${checks.map((c) =>
-    `<li><a href="#" data-exp="${esc(c.experiment_id)}">Experiment #${esc(c.experiment_id)}</a>: ${esc(c.trades)} trades; ${c.trades >= c.minimum ? "met" : "below"} the minimum of ${esc(c.minimum)}.</li>`).join("")}</ul>` :
-    "";
+    <p><b>Next:</b> ${next}</p></div>` : "";
+  const counts = hasChecks ? `<details class="entry-details"><summary>View evidence · ${checks.length} trade count${checks.length === 1 ? "" : "s"}</summary><ul>${checks.map((c) =>
+    `<li><a href="#" data-exp="${esc(c.experiment_id)}">Experiment #${esc(c.experiment_id)}</a>: ${esc(c.trades)} trades; ${c.trades >= c.minimum ? "met" : "below"} the minimum of ${esc(c.minimum)}.</li>`).join("")}</ul></details>` : "";
   return `<div class="entry k-${esc(kind)} ${fresh ? "fresh" : ""}" data-jid="${j.id}">
     <time class="entry-time" datetime="${esc(new Date(j.ts * 1000).toISOString())}" title="${esc(dt(j.ts))}">${esc(clock24(j.ts))}</time>
     <span class="kind ${esc(kind)}">${esc(cap(kind || "entry"))}</span>
     <div class="entry-title">${rich(title)}</div>
-    <div class="entry-main">${grounded ? `<div class="entry-evidence">${evidence}</div>
-      <details><summary>Analyst rationale</summary><div class="entry-body">${rich(j.body)}</div></details>` :
-      `<div class="entry-body ${long ? "clamp" : ""}">${rich(j.body)}</div>`}
+    <div class="entry-main">${next ? `${evidence}<details><summary>Analyst rationale</summary><div class="entry-body">${rich(j.body)}</div></details>` :
+      `<div class="entry-body ${long || hasChecks ? "clamp" : ""}">${rich(j.body)}</div>
+      ${long ? `<button type="button" class="entry-more" data-more aria-expanded="false">Show more</button>` : ""}${counts}`}
       <div class="entry-meta"><span class="author">${authorLabel(j.author)}</span>${j.kind === "intent" ? '<span class="muted">intent, not a fill</span>' : ""}</div>
-      ${long || links.length ? `<div class="entry-refs">${long ? `<button type="button" class="entry-more" data-more aria-expanded="false">Show more</button>` : ""}${links.join("")}</div>` : ""}</div></div>`;
+      ${links.length ? `<div class="entry-refs">${links.join("")}</div>` : ""}</div></div>`;
 }
+// Several strategies waiting for one bar: one row naming the bar, the waiting strategies one click away.
+function groupHTML(g) {
+  const first = g.entries.at(-1), last = g.entries[0];
+  const links = g.entries.map((j) => j.refs?.strategy_id ? `<li><a href="#" data-strat="${j.refs.strategy_id}">${esc(g.names[g.entries.indexOf(j)])}</a></li>` : `<li>${esc(g.names[g.entries.indexOf(j)])}</li>`);
+  return `<div class="entry k-data entry-group" data-jid="${esc(groupKey(g))}">
+    <time class="entry-time" datetime="${esc(new Date(last.ts * 1000).toISOString())}" title="${esc(dt(first.ts))} – ${esc(dt(last.ts))}">${esc(clock24(last.ts))}</time>
+    <span class="kind data">Data</span>
+    <div class="entry-title">${g.entries.length} strategies waiting for the ${esc(g.bar)}</div>
+    <div class="entry-main"><details class="entry-details"><summary>Show strategies</summary><ul>${links.join("")}</ul></details>
+      <div class="entry-meta"><span class="author">${authorLabel(last.author)}</span></div></div></div>`;
+}
+const groupKey = (g) => `g-${g.entries.map((j) => j.id).join("-")}`;
 function renderFeed(freshIds = new Set()) {
   const feed = $("#feed");
   const kinds = activeKinds();
   const query = $("#journal-search").value.trim();
-  const matches = state.journal.filter((j) => (!kinds.size || kinds.has(j.kind)) && (!query || journalMatches(j, query)));
-  const items = matches.slice(0, 300);
+  const keep = (j) => (!kinds.size || kinds.has(j.kind)) && (!query || journalMatches(j, query));
+  let matches = state.journal.filter(keep);
+  const searched = query && state.search.query === query && state.search.kinds === [...kinds].join(",");
+  if (searched) {  // the server searched the full history; merge it with what is loaded
+    const byId = new Map(matches.map((j) => [j.id, j]));
+    for (const j of state.search.rows) if (!kinds.size || kinds.has(j.kind)) byId.set(j.id, j);
+    matches = [...byId.values()].sort((a, b) => b.id - a.id);
+  }
+  const shown = matches.slice(0, 300);
   // Don't evict the row under the keyboard just because it slid past the display cap.
   const focusedRow = document.activeElement.closest("#feed [data-jid]");
-  if (focusedRow && matches.length > items.length) {
+  if (focusedRow && matches.length > shown.length) {
     const index = matches.findIndex((j) => String(j.id) === focusedRow.dataset.jid);
-    if (index >= items.length) items.push(matches[index]);
+    if (index >= shown.length) shown.push(matches[index]);
   }
+  const items = groupJournal(shown);
   const results = $("#journal-results");
-  const summary = query ? `${matches.length} ${matches.length === 1 ? "match" : "matches"} in loaded entries${matches.length > items.length ? ` · showing ${items.length}` : ""}` :
-    matches.length > items.length ? `Showing ${items.length} of ${matches.length} loaded entries` : "";
+  const more = matches.length > shown.length ? ` · showing ${shown.length}` : "";
+  const summary = query ? `${matches.length}${searched && state.search.rows.length >= 200 ? "+" : ""} ${matches.length === 1 ? "match" : "matches"} ${searched ? "in the full history" : "in loaded entries · searching the full history…"}${more}` :
+    matches.length > shown.length ? `Showing ${shown.length} of ${matches.length} loaded entries` : "";
   if (results.textContent !== summary) results.textContent = summary;
   if (!items.length) {
-    const text = query ? "No matches. Try a different search or change the filters." : `No journal entries${state.filter.size ? " for these filters" : " yet"}.`;
+    const text = query ? (searched ? "No matches in the full history. Try a different search or change the filters." : "Searching the full history…") : `No journal entries${state.filter.size ? " for these filters" : " yet"}.`;
     if (feed.firstElementChild?.className !== "empty" || feed.textContent !== text) feed.innerHTML = `<div class="empty">${text}</div>`;
     return;
   }
@@ -1457,7 +1597,8 @@ function renderFeed(freshIds = new Set()) {
   const previous = new Map([...feed.children].map((node) => [node.dataset.jid || node.dataset.dayStart, node]));
   const desired = [], template = document.createElement("template");
   let lastDay = null;
-  for (const j of items) {
+  for (const item of items) {
+    const j = item.entry || item.entries[0];
     const d = dayKey(j.ts);
     if (d !== lastDay) {
       const key = `day-${j.id}`;
@@ -1468,9 +1609,12 @@ function renderFeed(freshIds = new Set()) {
       }
       desired.push(heading); previous.delete(key); lastDay = d;
     }
-    const id = String(j.id);
+    const id = item.entry ? String(j.id) : groupKey(item);
     let row = previous.get(id);
-    if (!row) { template.innerHTML = entryHTML(j, freshIds.has(j.id)); row = template.content.firstElementChild; }
+    if (!row) {
+      template.innerHTML = item.entry ? entryHTML(j, freshIds.has(j.id)) : groupHTML(item);
+      row = template.content.firstElementChild;
+    }
     desired.push(row); previous.delete(id);
   }
   previous.forEach((node) => node.remove());
@@ -1661,7 +1805,7 @@ function openFromHash(event) {
   const m = recordRoute.exec(hash);
   if (m) {
     if (m[1] === "llm" && !isOperator()) { setHash("research", true); goTo("research", { hash: false }); return true; }
-    ({ experiment: openExperiment, strategy: openStrategy, order: openOrder, llm: openLLM })[m[1]](m[2]).catch(fail);
+    ({ experiment: openExperiment, strategy: openStrategy, order: openOrder, llm: openLLM, compare: openCompare, replay: openReplay })[m[1]](m[2], m[3]).catch(fail);
   }
 }
 window.addEventListener("hashchange", openFromHash);

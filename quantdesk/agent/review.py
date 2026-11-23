@@ -12,11 +12,12 @@ import traceback
 import numpy as np
 
 from .. import clock, db, settings
-from ..marketdata.freshness import signal_delay_bars
+from ..marketdata.freshness import signal_usable_after
 from ..research import backtest as B
 from ..research.experiment import build_panel
 from ..research.strategy import compute_signals
 from ..trading import ledger, live
+from ..units import normalize_invalidation
 from ..venues import VENUES
 from . import journal
 from .analyst import RulesAnalyst, get_analyst
@@ -58,7 +59,7 @@ def shadow_backtest(strat: dict) -> dict | None:
         return None
     sig = compute_signals(spec, spec.get("fixed_params") or {}, panel)
     r = B.run(spec, panel, sig, settings.get("costs")[venue], start, len(ts), capital=strat["allocation"] or 1.0,
-              delay=signal_delay_bars(venue), max_participation=settings.get("risk")["max_participation"])
+              usable_after=signal_usable_after(venue), max_participation=settings.get("risk")["max_participation"])
     return {"bars": len(ts) - start, "total_return": r.metrics["total_return"], "n_trades": r.metrics["n_trades"],
             "max_drawdown": r.metrics["max_drawdown"]}
 
@@ -82,11 +83,11 @@ def review_strategy(strat: dict, analyst=None) -> dict:
     analyst = analyst or get_analyst()
     st = live_stats(strat)
     band = expected_band(strat, st["days_live"])
-    inval = db.loads(strat["invalidation"], {}) or {}
+    inval = normalize_invalidation(db.loads(strat["invalidation"], {}) or {})
     flags = []
     max_dd = inval.get("max_live_drawdown_pct")
-    if max_dd and st["drawdown"] <= -abs(max_dd):
-        flags.append(f"live drawdown {st['drawdown']:.1%} breached the recorded limit -{abs(max_dd):.1%}")
+    if max_dd and st["drawdown"] <= -max_dd:
+        flags.append(f"live drawdown {st['drawdown']:.1%} breached the recorded limit -{max_dd:.1%}")
     if band and st["closed_trades"] >= (inval.get("min_trades_before_judging") or 5) and st["return"] < band["low_2_5sd"]:
         flags.append(f"live return {st['return']:+.2%} is below the expectation band low {band['low_2_5sd']:+.2%}")
     try:

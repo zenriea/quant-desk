@@ -301,7 +301,7 @@ async def state():
 @app.get("/api/equity", dependencies=[Depends(require_auth)])
 async def equity(points: int = Query(600, ge=2, le=3000)):
     def f():
-        rows = db.q("SELECT ts, equity, benchmark_equity, crypto_benchmark_equity, gross, cash FROM equity_snapshots ORDER BY ts")
+        rows = db.q("SELECT ts, equity, benchmark_equity, crypto_benchmark_equity, gross, crypto_gross, cash FROM equity_snapshots ORDER BY ts")
         if len(rows) > points:
             step = (len(rows) - 1) / (points - 1)
             idx = sorted({int(round(i * step)) for i in range(points)})
@@ -312,8 +312,11 @@ async def equity(points: int = Query(600, ge=2, le=3000)):
 
 @app.get("/api/journal", dependencies=[Depends(require_auth)])
 async def get_journal(after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
-                      kind: str | None = None):
-    return await run_in_threadpool(journal.recent, min(limit, 500), after_id, kind.split(",") if kind else None)
+                      kind: str | None = None, q: str | None = Query(None, max_length=120),
+                      before_id: int | None = Query(None, ge=1)):
+    """Newest entries first. ``q`` searches the full history; ``before_id`` pages further back."""
+    return await run_in_threadpool(journal.recent, min(limit, 500), after_id, kind.split(",") if kind else None,
+                                   q, before_id)
 
 
 @app.get("/api/stream", dependencies=[Depends(require_auth)])
@@ -351,19 +354,26 @@ def _rows(sql, params=(), json_fields=()):
 
 @app.get("/api/experiments", dependencies=[Depends(require_auth)])
 async def experiments(limit: int = Query(100, ge=1, le=500)):
-    return await run_in_threadpool(_rows, "SELECT e.id, e.hypothesis_id, e.created_at, e.completed_at, e.venue, e.kind, e.status, "
-                                   "e.chosen_params, e.test, e.gates, e.leakage, e.error, h.title, h.author, "
-                                   "s.id AS strategy_id, s.probe AS strategy_probe, s.status AS strategy_status FROM experiments e "
-                                   "JOIN hypotheses h ON h.id=e.hypothesis_id "
-                                   "LEFT JOIN strategies s ON s.id = (SELECT id FROM strategies WHERE experiment_id=e.id ORDER BY id DESC LIMIT 1) "
-                                   "ORDER BY e.id DESC LIMIT ?", (limit,),
-                                   ("chosen_params", "test", "gates", "leakage"))
+    def f():
+        from ..agent.research_loop import lifetime_reuse_counts
+        rows = _rows("SELECT e.id, e.hypothesis_id, e.created_at, e.completed_at, e.venue, e.kind, e.status, "
+                     "e.chosen_params, e.test, e.gates, e.leakage, e.error, h.title, h.author, "
+                     "s.id AS strategy_id, s.probe AS strategy_probe, s.status AS strategy_status FROM experiments e "
+                     "JOIN hypotheses h ON h.id=e.hypothesis_id "
+                     "LEFT JOIN strategies s ON s.id = (SELECT id FROM strategies WHERE experiment_id=e.id ORDER BY id DESC LIMIT 1) "
+                     "ORDER BY e.id DESC LIMIT ?", (limit,),
+                     ("chosen_params", "test", "gates", "leakage"))
+        lifetime = lifetime_reuse_counts()
+        for r in rows:
+            r["holdout_reuse_lifetime"] = lifetime.get(r["id"])
+        return rows
+    return await run_in_threadpool(f)
 
 
 @app.get("/api/experiments/{eid}", dependencies=[Depends(require_auth)])
 async def experiment(eid: int):
     def f():
-        from ..agent.research_loop import probe_blocker
+        from ..agent.research_loop import lifetime_reuse_counts, parent_experiment_id, probe_blocker
         raw = db.q1("SELECT * FROM experiments WHERE id=?", (eid,))
         e = db.row_dict(raw,
                         ["spec", "windows", "chosen_params", "grid_results", "train", "validation", "test", "challenge",
@@ -375,6 +385,8 @@ async def experiment(eid: int):
                                (eid,), ("details",))
         e["strategy"] = db.row_dict(db.q1("SELECT id, name, version, status, probe FROM strategies WHERE experiment_id=? ORDER BY id DESC", (eid,)))
         e["operator_probe_blocker"] = probe_blocker(dict(raw), operator=True)
+        e["parent_id"] = parent_experiment_id(eid, e["hypothesis"])
+        e["holdout_reuse_lifetime"] = lifetime_reuse_counts().get(eid)
         return e
     return await run_in_threadpool(f)
 
@@ -401,6 +413,11 @@ def _pipeline(now: float) -> dict:
     cands = ranked_candidates(since)
     counts = {k: db.q1(f"SELECT COUNT(*) n FROM strategies WHERE status IN ('active','incubating') AND probe={v}")["n"]
               for k, v in (("strategies", 0), ("probes", 1))}
+    money = db.q1("SELECT COALESCE(SUM(allocation),0) funded, COALESCE(SUM(approved_allocation),0) approved "
+                  "FROM strategies WHERE status IN ('active','incubating') AND probe=0")
+    counts.update(funded=round(money["funded"], 2), approved=round(money["approved"], 2),
+                  probe_funded=round(db.q1("SELECT COALESCE(SUM(allocation),0) n FROM strategies "
+                                           "WHERE status IN ('active','incubating') AND probe=1")["n"], 2))
     finished = [r for r in rows if r["status"] in ("passed", "failed")]
     return {"window_days": 7, "experiments": len(rows), "finished": len(finished),
             "passed": sum(r["status"] == "passed" for r in rows),
@@ -457,6 +474,19 @@ async def strategy(sid: int):
         if not s:
             raise HTTPException(404, "strategy not found")
         return _strategy_model(s)
+    return await run_in_threadpool(f)
+
+
+@app.get("/api/strategies/{sid}/replay", dependencies=[Depends(require_auth)])
+async def strategy_replay(sid: int, until: float | None = Query(None, gt=0)):
+    """Bar-by-bar comparison of live paper decisions with the frozen rules' shadow backtest.
+    ``until`` (unix seconds) replays only what was known then, e.g. when a review ran."""
+    def f():
+        from ..agent.replay import replay
+        s = db.q1("SELECT * FROM strategies WHERE id=?", (sid,))
+        if not s:
+            raise HTTPException(404, "strategy not found")
+        return replay(dict(s), until)
     return await run_in_threadpool(f)
 
 

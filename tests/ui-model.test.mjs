@@ -316,3 +316,80 @@ test("window overlap distinguishes recorded zero from missing evidence", () => {
   assert.equal(holdoutLabel(1), "1 overlapping test · lookback not recorded");
   assert.equal(holdoutLabel(29, 60), "29 overlapping tests · 60-day lookback");
 });
+
+import { groupJournal } from "../web/ui-model.mjs";
+
+test("strategies waiting for the same bar read as one row", () => {
+  const w = (id, name, bar) => ({ id, kind: "data", title: `${name}: waiting for the ${bar} bar`, refs: { strategy_id: id } });
+  const items = groupJournal([w(9, "a", "18:45 UTC 15-minute"), w(8, "b", "18:45 UTC 15-minute"), w(7, "c", "18:30 UTC 15-minute"),
+    { id: 6, kind: "system", title: "Worker started" }, w(5, "a", "18:30 UTC 15-minute"), w(4, "b", "18:30 UTC 15-minute")]);
+  assert.deepEqual(items.map((i) => i.entry ? i.entry.id : i.entries.map((e) => e.id)), [[9, 8], 7, 6, [5, 4]]);
+  assert.deepEqual(items[0].names, ["a", "b"]);
+  assert.equal(items[0].bar, "18:45 UTC 15-minute bar");
+});
+
+test("the exposure-matched benchmark holds the desk's share in the market and the rest in cash", () => {
+  const rows = [
+    { ts: 0, equity: 100, gross: 0, benchmark_equity: 100 },     // all cash while the benchmark falls 10%
+    { ts: 10, equity: 100, gross: 50, benchmark_equity: 90 },    // half invested while it rises 10%
+    { ts: 20, equity: 102, gross: 51, benchmark_equity: 99 },
+  ];
+  const c = equityComparison(rows, null);
+  assert.ok(Math.abs(c.avgExposure - 0.25) < 1e-12);
+  assert.ok(Math.abs(c.matched - 0.05) < 1e-12);           // (1 + 0) * (1 + 0.5 * 0.10) - 1
+  assert.ok(Math.abs(c.matchedDifference - (0.02 - 0.05)) < 1e-12);
+  const cash = equityComparison([{ ...rows[0] }, { ...rows[1], gross: 0 }], null);
+  assert.equal(cash.matched, 0);                          // all cash: the fair benchmark is flat
+});
+
+import { compareExperiments } from "../web/ui-model.mjs";
+
+test("holdout label shows lifetime reuse next to the lookback count", () => {
+  assert.equal(holdoutLabel(6, 3, 24), "6 overlapping tests · 3-day lookback · 24 overall");
+  assert.equal(holdoutLabel(6, 3, 6), "6 overlapping tests · 3-day lookback");
+  assert.equal(holdoutLabel(undefined, undefined, 2), "2 overlapping tests overall");
+});
+
+test("a revision compares rules, dates, costs and flipped gates with its parent", () => {
+  const parent = { spec: { entry: "a", exit: "b", universe: ["X", "Y"], top_k: 5, params: { n: [10] } }, chosen_params: { n: 10 },
+    windows: { test: { start: 0, end: 100 } }, test: { total_return: 0.06, cost_drag: 0.01 },
+    gates: { checks: [{ name: "test_sharpe", pass: true, value: 1 }, { name: "top5_concentration", pass: true, value: 1 }] } };
+  const child = { spec: { entry: "a", exit: "c", universe: ["X", "Z"], top_k: 5, params: { n: [10] } }, chosen_params: { n: 10 },
+    windows: { test: { start: 50, end: 150 } }, test: { total_return: 0.04, cost_drag: 0.02 },
+    gates: { checks: [{ name: "test_sharpe", pass: true, value: 0.8 }, { name: "top5_concentration", pass: false, value: 3 }] } };
+  const c = compareExperiments(child, parent);
+  assert.deepEqual(c.rules.filter((r) => r.changed).map((r) => r.key), ["exit", "universe"]);
+  assert.deepEqual(c.universe, { added: ["Z"], removed: ["Y"] });
+  assert.equal(c.dates.overlap, 0.5);
+  assert.deepEqual(c.gates.filter((g) => g.flipped).map((g) => g.name), ["top5_concentration"]);
+  assert.equal(c.metrics.find((m) => m.key === "cost_drag").child, 0.02);
+});
+
+test("crypto exposure is matched against BTC, not QQQ", () => {
+  // The desk holds only BTC; BTC rises 20%, QQQ is flat, the desk earns 20%: no edge.
+  const rows = [
+    { ts: 0, equity: 100, gross: 100, crypto_gross: 100, benchmark_equity: 100, crypto_benchmark_equity: 100 },
+    { ts: 10, equity: 120, gross: 120, crypto_gross: 120, benchmark_equity: 100, crypto_benchmark_equity: 120 },
+  ];
+  const c = equityComparison(rows, null);
+  assert.ok(Math.abs(c.matched - 0.2) < 1e-12);
+  assert.ok(Math.abs(c.matchedDifference) < 1e-12);
+  assert.equal(c.cryptoExposure, 1); assert.equal(c.stockExposure, 0);
+  // Half stocks, half BTC: each leg follows its own benchmark.
+  const mixed = equityComparison([{ ...rows[0], crypto_gross: 50 }, { ...rows[1], benchmark_equity: 110 }], null);
+  assert.ok(Math.abs(mixed.matched - (0.5 * 0.1 + 0.5 * 0.2)) < 1e-12);
+});
+
+test("a missing benchmark price where the account was invested suppresses the matched excess return", () => {
+  const rows = [
+    { ts: 0, equity: 100, gross: 100, crypto_gross: 100, benchmark_equity: 100, crypto_benchmark_equity: 100 },
+    { ts: 10, equity: 120, gross: 120, crypto_gross: 120, benchmark_equity: 100, crypto_benchmark_equity: null },
+    { ts: 20, equity: 120, gross: 120, crypto_gross: 120, benchmark_equity: 100, crypto_benchmark_equity: 120 },
+  ];
+  const c = equityComparison(rows, null);
+  assert.equal(c.matched, null); assert.equal(c.matchedDifference, null);
+  assert.deepEqual(c.matchedMissing, ["crypto"]);
+  // A stock-only account does not need BTC prices: the same gap is irrelevant there.
+  const stocks = equityComparison(rows.map((r) => ({ ...r, crypto_gross: 0 })), null);
+  assert.ok(Math.abs(stocks.matched) < 1e-12 && stocks.matchedDifference != null);
+});

@@ -60,7 +60,7 @@ def test_backtest_exit_is_capped_by_participation():
     from quantdesk.research.backtest import run
     from quantdesk.research.strategy import Signals
     p = np.full((6, 1), 100.0)
-    panel = dict(symbols=["BTC-USD"], open=p, close=p, ts=np.arange(6))
+    panel = dict(symbols=["BTC-USD"], open=p, close=p, ts=np.arange(6) * 900)  # 15-minute bar opens
     entry = np.zeros_like(p, dtype=bool)
     exit_ = entry.copy()
     entry[0] = exit_[2] = True
@@ -69,5 +69,5 @@ def test_backtest_exit_is_capped_by_participation():
     costs = dict(backtest_half_spread_bps=0, base_slippage_bps=0, impact_coef=0, taker_fee_bps=0)
     res = run(dict(venue="CRYPTO", universe=["BTC-USD"], sizing=dict(weight=0.5)), panel,
               Signals(entry, exit_, None, p), costs, 0, 6, liquidity=(adv, np.ones_like(p)))
-    assert len(res.trades) == 1 and res.trades[0]["exit_ts"] == 4  # remainder sold on the next liquid bar
+    assert len(res.trades) == 1 and res.trades[0]["exit_ts"] == 4 * 900  # remainder sold on the next liquid bar
     assert abs(res.trades[0]["pnl"]) < 1e-6
