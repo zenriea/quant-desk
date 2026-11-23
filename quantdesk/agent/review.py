@@ -17,7 +17,7 @@ from ..research import backtest as B
 from ..research.experiment import build_panel
 from ..research.strategy import compute_signals
 from ..trading import ledger, live
-from ..units import drawdown_fraction, normalize_invalidation
+from ..units import normalize_invalidation
 from ..venues import VENUES
 from . import journal
 from .analyst import RulesAnalyst, get_analyst
@@ -151,29 +151,6 @@ def review_strategy(strat: dict, analyst=None) -> dict:
     from .research_loop import _save_beliefs
     _save_beliefs(rev.get("beliefs", []), strat["venue"], author, call_id)
     return {"action": action, "flags": flags}
-
-
-def repair_drawdown_limits() -> list[int]:
-    """Rewrite stored drawdown limits that were written as percentages (-3.0) as fractions (0.03).
-
-    Runs at worker start. Each repaired strategy gets one journal entry saying what changed."""
-    fixed = []
-    for s in db.q("SELECT id, name, version, invalidation FROM strategies"):
-        inval = db.loads(s["invalidation"], {}) or {}
-        raw = inval.get("max_live_drawdown_pct")
-        new = drawdown_fraction(raw)
-        if raw is None or raw == new:
-            continue
-        inval["max_live_drawdown_pct"] = new
-        db.ex("UPDATE strategies SET invalidation=? WHERE id=?", (db.dumps(inval), s["id"]))
-        journal.write("system", f"Drawdown limit repaired: {s['name']} v{s['version']}",
-                      f"The recorded limit {raw!r} was stored in the wrong unit, so the daily review compared a "
-                      f"fractional drawdown with it and could never retire the strategy. It now reads "
-                      + (f"{new:.1%} ({new})." if new else "as no limit (the value was not a usable drawdown).")
-                      + " The intended limit is unchanged; only its unit was fixed.",
-                      refs={"strategy_id": s["id"]}, author="system", dedupe_key=f"dd-unit:{s['id']}:{raw}")
-        fixed.append(s["id"])
-    return fixed
 
 
 def review_all(analyst=None) -> list[dict]:

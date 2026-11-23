@@ -112,8 +112,6 @@ def recover(prev_heartbeat: float | None) -> dict:
             db.ex("DELETE FROM data_status WHERE key=?", (r["key"],))
     db.ex("DELETE FROM jobs WHERE name='research'")  # pre-0.2 shared research clock, replaced by research:<venue>
     info["retired_for_bar_size"] = retire_on_timeframe_change() + retire_stale_bar_size_strategies()
-    from .agent.review import repair_drawdown_limits
-    info["drawdown_limits_repaired"] = repair_drawdown_limits()
     chk = ledger.integrity_check()
     info["integrity"] = chk
     if not chk["ok"]:

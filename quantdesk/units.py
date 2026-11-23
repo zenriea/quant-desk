@@ -22,6 +22,12 @@ def drawdown_fraction(value) -> float | None:
     return a if 0 < a <= 1 else None
 
 
+def default_drawdown_limit(test_max_drawdown) -> float:
+    """The rules engine's limit: 1.5x the sealed test's max drawdown, kept between 5 % and 25 %."""
+    mdd = abs(test_max_drawdown) if isinstance(test_max_drawdown, (int, float)) and math.isfinite(test_max_drawdown) else 0.1
+    return round(min(0.25, max(0.05, (mdd or 0.1) * 1.5)), 3)
+
+
 def normalize_invalidation(inval: dict | None) -> dict:
     out = dict(inval or {})
     if "max_live_drawdown_pct" in out:

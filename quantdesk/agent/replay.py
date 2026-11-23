@@ -23,27 +23,47 @@ def _usable_at(venue: str, bar: int) -> int:
     return bar + VENUES[venue].bar_seconds + (SIP_DELAY if venue == "NASDAQ" else 0)
 
 
-def _live_orders(sid: int) -> list[dict]:
+def _live_orders(sid: int, until: float | None = None) -> list[dict]:
+    """Orders created by ``until``, with their fills and status as they stood then."""
     out = []
-    for o in db.q("SELECT * FROM orders WHERE strategy_id=? ORDER BY id", (sid,)):
+    cut = until if until is not None else float("inf")
+    for o in db.q("SELECT * FROM orders WHERE strategy_id=? AND created_at<=? ORDER BY id", (sid, cut)):
         o = db.row_dict(o, ["signal_snapshot", "risk_check"])
         fills = [dict(f) for f in db.q("SELECT ts, qty, price, price_basis, spread_bps FROM fills WHERE order_id=? "
-                                       "ORDER BY id", (o["id"],))]
+                                       "AND ts<=? ORDER BY id", (o["id"], cut))]
+        if until is not None and (o["closed_at"] or 0) > until:
+            o["status"], o["status_note"] = ("partially_filled" if fills else "submitted"), "still open at that time"
         out.append({**o, "fills": fills})
     return out
 
 
-def _notes(sid: int, start: float) -> list[dict]:
+OPEN = ("intent", "submitted", "partially_filled")
+
+
+def _outcome(s: dict | None, o: dict | None) -> str:
+    """Signal agreement first, then execution: a paper buy the risk engine rejected while the backtest
+    filled is a divergence even though both sides signalled on the same bar."""
+    if not s:
+        return "live_only"
+    if not o:
+        return "shadow_only"
+    if not s["executes"] or (s["fill"] is None and s["skip"] is None) or o["status"] in OPEN:
+        return "both"  # one side has not had its chance to fill yet: nothing to compare
+    return "both" if bool(s["fill"]) == bool(o["fills"]) else "fill_differs"
+
+
+def _notes(sid: int, start: float, until: float | None = None) -> list[dict]:
     """Journal entries that explain a missing live decision: data waits, partial bars, downtime, restarts."""
     rows = db.q("SELECT id, ts, kind, title FROM journal WHERE ts>=? AND ("
                 "(kind IN ('data','system','decision') AND EXISTS (SELECT 1 FROM json_each(journal.refs) "
                 " WHERE json_each.key='strategy_id' AND json_each.value=?)) "
-                "OR (kind='system' AND (title='Worker started' OR title LIKE 'Back online after%'))) ORDER BY id",
-                (start, sid))
+                "OR (kind='system' AND (title='Worker started' OR title LIKE 'Back online after%'))) "
+                "AND ts<=? ORDER BY id", (start, sid, until if until is not None else float("inf")))
     return [dict(r) for r in rows]
 
 
-def replay(strat: dict) -> dict:
+def replay(strat: dict, until: float | None = None) -> dict:
+    """``until`` replays only what was known at that moment, e.g. when a review ran."""
     sid, venue = strat["id"], strat["venue"]
     v = VENUES[venue]
     spec = db.loads(strat["spec"])
@@ -53,16 +73,19 @@ def replay(strat: dict) -> dict:
     ts = panel["ts"]
     act = strat["activated_at"] or strat["created_at"]
     end_at = strat["retired_at"] if strat.get("status") == "retired" and strat.get("retired_at") else None
+    if until is not None:
+        end_at = min(end_at, until) if end_at else until
     start = int(np.searchsorted(ts, act))
-    stop = int(np.searchsorted(ts, end_at)) if end_at else len(ts)
+    # Only bars that had closed by the cutoff, plus the next bar's open, which is when their signals fill.
+    stop = min(len(ts), int(np.searchsorted(ts, end_at - v.bar_seconds, side="right")) + 1) if end_at else len(ts)
     syms = panel["symbols"]
-    orders = _live_orders(sid)
+    orders = _live_orders(sid, until)
     base = {"strategy": {k: strat[k] for k in ("id", "name", "version", "venue", "status", "allocation")},
-            "span": {"start": act, "end": end_at, "bars": max(0, stop - start)},
+            "span": {"start": act, "end": end_at, "bars": max(0, stop - start), "until": until},
             "timing": {"bar_seconds": v.bar_seconds, "data_delay_seconds": SIP_DELAY if venue == "NASDAQ" else 0,
                        "backtest_fill_delay_bars": signal_delay_bars(venue)}}
     if stop - start < 2:
-        return {**base, "rows": [], "first_divergence": None, "notes": _notes(sid, act),
+        return {**base, "rows": [], "first_divergence": None, "notes": _notes(sid, act, until),
                 "summary": {"shadow_trades": 0, "live_orders": len(orders), "matched": 0}}
     sig = compute_signals(spec, params, panel)
     events: list[dict] = []
@@ -99,7 +122,7 @@ def replay(strat: dict) -> dict:
         f = (o or {}).get("fills") or []
         rows.append({
             "bar": bar, "symbol": sym, "side": side, "usable_at": _usable_at(venue, bar),
-            "match": "both" if s and o else "shadow_only" if s else "live_only",
+            "match": _outcome(s, o),
             "shadow": None if not s else {
                 "reason": s["reason"], "executes": s["executes"], "skip": s["skip"], "fill": s["fill"]},
             "live": None if not o else {
@@ -127,7 +150,7 @@ def replay(strat: dict) -> dict:
     from ..trading.live import explain
     explained = 0
     for row in rows:
-        if row["match"] == "both" or row["bar"] is None or explained >= MAX_EXPLAINED:
+        if row["match"] not in ("live_only", "shadow_only") or row["bar"] is None or explained >= MAX_EXPLAINED:
             continue
         t = idx.get(row["bar"])
         expr = spec.get("entry") if row["side"] == "buy" else spec.get("exit")
@@ -135,7 +158,7 @@ def replay(strat: dict) -> dict:
             continue
         row["rule_values_now"] = explain(expr, panel, params, t, syms.index(row["symbol"]), v.periods_per_year, market_col)
         explained += 1
-    notes = _notes(sid, act)
+    notes = _notes(sid, act, until)
     first = next((i for i, x in enumerate(rows) if x["match"] != "both"), None)
     if first is not None and rows[first]["bar"] is not None:
         lo, hi = rows[first]["bar"] - v.bar_seconds, rows[first]["usable_at"] + 3 * v.bar_seconds
@@ -145,4 +168,5 @@ def replay(strat: dict) -> dict:
                         "matched": sum(1 for x in rows if x["match"] == "both"),
                         "shadow_only": sum(1 for x in rows if x["match"] == "shadow_only"),
                         "live_only": sum(1 for x in rows if x["match"] == "live_only"),
+                        "fill_differs": sum(1 for x in rows if x["match"] == "fill_differs"),
                         "shadow_return": r.metrics["total_return"]}}

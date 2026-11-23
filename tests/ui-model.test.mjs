@@ -364,3 +364,18 @@ test("a revision compares rules, dates, costs and flipped gates with its parent"
   assert.deepEqual(c.gates.filter((g) => g.flipped).map((g) => g.name), ["top5_concentration"]);
   assert.equal(c.metrics.find((m) => m.key === "cost_drag").child, 0.02);
 });
+
+test("crypto exposure is matched against BTC, not QQQ", () => {
+  // The desk holds only BTC; BTC rises 20%, QQQ is flat, the desk earns 20%: no edge.
+  const rows = [
+    { ts: 0, equity: 100, gross: 100, crypto_gross: 100, benchmark_equity: 100, crypto_benchmark_equity: 100 },
+    { ts: 10, equity: 120, gross: 120, crypto_gross: 120, benchmark_equity: 100, crypto_benchmark_equity: 120 },
+  ];
+  const c = equityComparison(rows, null);
+  assert.ok(Math.abs(c.matched - 0.2) < 1e-12);
+  assert.ok(Math.abs(c.matchedDifference) < 1e-12);
+  assert.equal(c.cryptoExposure, 1); assert.equal(c.stockExposure, 0);
+  // Half stocks, half BTC: each leg follows its own benchmark.
+  const mixed = equityComparison([{ ...rows[0], crypto_gross: 50 }, { ...rows[1], benchmark_equity: 110 }], null);
+  assert.ok(Math.abs(mixed.matched - (0.5 * 0.1 + 0.5 * 0.2)) < 1e-12);
+});

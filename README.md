@@ -21,7 +21,7 @@ virtual money.
 | KPIs | Equity, P&L **after costs**, exposure and drawdown vs. their limits |
 | Trading pipeline | One sentence on why the desk is or is not trading (naming a closed market when every live strategy is on it), research over the last 7 days (tested → profitable on test → passed gates) next to trading now (funded strategies, probes, open positions), the ideas closest to trading with a **Start manual probe** button, and which gates block ideas most often |
 | Positions | Click a row to see why it entered (written *before* the fill), the exact exit rules, and the exit plan; probe sleeves are labelled |
-| Equity chart | Account vs. QQQ and BTC buy-and-hold of the same $100k, plus excess return, the same comparison against QQQ held at the account's own average exposure (the rest in cash), and fees |
+| Equity chart | Account vs. QQQ and BTC buy-and-hold of the same $100k, plus excess return, the same comparison against benchmarks held at the account's own exposure (its stock share in QQQ, its crypto share in BTC, the rest in cash, from the previous snapshot), and fees |
 | Agent activity | Current activity, open orders and scheduled next actions |
 | Beliefs | Current views, each linked to the experiments or trades that support it (beliefs without verifiable evidence are discarded) |
 | Research | Every experiment: hypothesis, frozen rules, train/validation/test split, metrics, stress tests, gate checklist, leakage notes, decision, lessons; test-window reuse in the deflation lookback and over the whole history; re-judge, start a probe or compare a revision with the experiment it revises (rules, test dates, costs, gates that flipped) from the drawer |
@@ -87,8 +87,10 @@ Observe ─► Investigate ─► Test ─► Challenge ─► Decide ─► Tra
   conditions. A breached drawdown limit always retires the strategy. Increases are allowed only
   after the minimum live period and only up to the approved amount. **Replay live vs. backtest**
   in a strategy's drawer lines the two up per signal bar and opens on the first bar where they
-  disagree: the rule values paper trading saw, the same rule on today's stored data, when the bar
-  was usable, the expected fill, and the actual fill or the reason there was none.
+  disagree, either in the signal or in the fill (a paper buy the risk engine rejected while the
+  backtest filled counts): the rule values paper trading saw, the same rule on today's stored data,
+  when the bar was usable, the expected fill, and the actual fill or the reason there was none.
+  **Replay to this review** cuts it at a review's timestamp, so later trades don't blur what it saw.
 
 "Learning" means the research memory. Each prompt includes prior experiments, their outcomes,
 which gates failed and the recorded lessons, and revisions link to their parent experiment. The
@@ -241,8 +243,10 @@ A sustained, timestamped forward-paper record is still required.
   decision cycle re-issues it, while the backtest carries it to the next bar's open.
 * **Strategy reviews.** `max_live_drawdown_pct` is a positive fraction (0.05 = 5 %). Analysts have
   written it as a percentage (`-3.0` for 3 %), which compared with a fractional drawdown never
-  fired; any value above 1 is now read as a percentage, and the worker repairs stored limits at
-  start-up with a journal entry per strategy. It compares current sleeve equity to its
+  fired. Any value above 1 is now read as a percentage wherever the limit is enforced or shown;
+  stored records keep what the analyst wrote. A new strategy whose limit is still unusable (0,
+  missing, above 100 %) is funded with the rules engine's limit instead, 1.5x the sealed test's
+  max drawdown within 5-25 %, and its journal entry says so. It compares current sleeve equity to its
   high-water mark sampled at account snapshots and reviews. For positive sleeve equity,
   allocation changes rescale the peak so adding or removing capital alone is not a drawdown.
   Existing desks start from current allocation and observed equity; earlier peaks are not

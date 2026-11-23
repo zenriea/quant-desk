@@ -18,19 +18,23 @@ export function equityComparison(rows, lastFillTs = null) {
       !Number.isFinite(last.equity) || !(last.benchmark_equity > 0)) return null;
   const account = last.equity / first.equity - 1, benchmark = last.benchmark_equity / first.benchmark_equity - 1;
   const uninvested = rows.every((r) => !(r.gross > 0)) && !(lastFillTs >= first.ts);
-  // The benchmark at the desk's own exposure: between snapshots, hold the share of equity the desk had
-  // in the market (gross / equity, at most 100%) in the benchmark and the rest in cash.
-  let matched = 1, weighted = 0, span = 0;
+  // The benchmarks at the desk's own exposure: between snapshots, hold the previous snapshot's stock share
+  // of equity in the stock benchmark (QQQ), its crypto share in BTC, and the rest in cash.
+  let matched = 1, stockW = 0, cryptoW = 0, span = 0;
+  const move = (a, b, key) => a[key] > 0 && b[key] > 0 ? b[key] / a[key] - 1 : 0;
   for (let i = 0; i + 1 < rows.length; i++) {
     const a = rows[i], b = rows[i + 1], dt = b.ts - a.ts;
     if (!(dt > 0)) continue;
-    const w = a.equity > 0 && a.gross > 0 ? Math.min(1, a.gross / a.equity) : 0;
-    if (a.benchmark_equity > 0 && b.benchmark_equity > 0) matched *= 1 + w * (b.benchmark_equity / a.benchmark_equity - 1);
-    weighted += w * dt; span += dt;
+    const eq = a.equity > 0 ? a.equity : 0;
+    const crypto = eq && a.crypto_gross > 0 ? Math.min(1, a.crypto_gross / eq) : 0;
+    const stock = eq && a.gross > 0 ? Math.min(1 - crypto, Math.max(0, (a.gross - (a.crypto_gross || 0)) / eq)) : 0;
+    matched *= 1 + stock * move(a, b, "benchmark_equity") + crypto * move(a, b, "crypto_benchmark_equity");
+    stockW += stock * dt; cryptoW += crypto * dt; span += dt;
   }
-  const avgExposure = span > 0 ? weighted / span : 0;
+  const stockExposure = span > 0 ? stockW / span : 0, cryptoExposure = span > 0 ? cryptoW / span : 0;
   return { account, benchmark, difference: account - benchmark, uninvested,
-           avgExposure, matched: matched - 1, matchedDifference: account - (matched - 1) };
+           avgExposure: stockExposure + cryptoExposure, stockExposure, cryptoExposure,
+           matched: matched - 1, matchedDifference: account - (matched - 1) };
 }
 
 export function showAnnualizedReturn(window) {

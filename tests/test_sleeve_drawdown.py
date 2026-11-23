@@ -64,19 +64,43 @@ def test_four_percent_loss_breaches_a_three_percent_limit(env):
     assert review_strategy(strategy(sid), analyst("continue"))["action"] == "retire"
 
 
-def test_stored_percent_limits_are_repaired_once(env):
-    from quantdesk.agent.review import repair_drawdown_limits
-    a, b = make_strategy(allocation=1000), make_strategy(allocation=1000)
-    db.ex("UPDATE strategies SET invalidation=? WHERE id=?", (db.dumps({"max_live_drawdown_pct": -10.0, "conditions": "c"}), a))
-    db.ex("UPDATE strategies SET invalidation=? WHERE id=?", (db.dumps({"max_live_drawdown_pct": 0.05}), b))
-    assert repair_drawdown_limits() == [a]
-    assert db.loads(strategy(a)["invalidation"]) == {"max_live_drawdown_pct": 0.1, "conditions": "c"}
-    assert db.loads(strategy(b)["invalidation"]) == {"max_live_drawdown_pct": 0.05}
-    assert repair_drawdown_limits() == []
-    assert db.q1("SELECT COUNT(*) n FROM journal WHERE title LIKE 'Drawdown limit repaired%'")["n"] == 1
-
-
 def test_units_reject_meaningless_limits():
     from quantdesk.units import drawdown_fraction
     assert [drawdown_fraction(v) for v in (0.05, -5, 25, 0, None, "5", True, 250, float("nan"))] == \
         [0.05, 0.05, 0.25, None, None, None, None, None, None]
+
+
+def _admit(limit, test_max_drawdown=-0.04):
+    """An analyst decision through strategy creation, the path the daily review then enforces."""
+    from quantdesk.agent.research_loop import create_strategy
+    spec = {"name": "adm", "venue": "NASDAQ", "universe": ["AAPL"], "kind": "dsl", "entry": "close > 0",
+            "exit": "close < 0", "sizing": {"method": "fixed", "weight": 1.0}, "params": {}}
+    res = {"test": {"max_drawdown": test_max_drawdown, "n_bars": 100}, "validation": {}, "windows": {},
+           "chosen_params": {}}
+    dec = {"allocation_pct": 0.2, "thesis": "t", "exit_plan": "e",
+           "invalidation": {"max_live_drawdown_pct": limit, "review_after_days": 30, "min_trades_before_judging": 5,
+                            "conditions": "c"}}
+    prop = {"title": "x", "rationale": "r", "prediction": "p", "falsification": "f"}
+    sid = create_strategy(1, 1, prop, spec, res, dec, "llm", None)
+    s = strategy(sid)
+    db.ex("INSERT INTO positions(strategy_id,symbol,venue,qty,avg_cost) VALUES(?,'AAPL','NASDAQ',?,100)",
+          (sid, s["allocation"] / 100))
+    put_quote("AAPL", 100, 100)
+    mtm.snapshot()
+    return sid
+
+
+@pytest.mark.parametrize("limit, stored, down_to, retired", [
+    (-3.0, 0.03, 96, True),      # written as a percentage: stored as 3%, a 4% loss retires
+    (0.03, 0.03, 98, False),     # a 2% loss stays inside 3%
+    (0, 0.06, 96, False),        # unusable: the rules engine's 1.5 x 4% = 6% applies
+    (250, 0.06, 93, True),       # unusable: 6% applies, a 7% loss retires
+])
+def test_decision_to_creation_to_review_always_has_a_working_limit(env, limit, stored, down_to, retired):
+    sid = _admit(limit)
+    assert db.loads(strategy(sid)["invalidation"])["max_live_drawdown_pct"] == pytest.approx(stored)
+    if limit in (0, 250):
+        body = db.q1("SELECT body FROM journal WHERE kind='decision' ORDER BY id DESC LIMIT 1")["body"]
+        assert "not a usable fraction" in body and "6.0%" in body
+    put_quote("AAPL", down_to, down_to)
+    assert (review_strategy(strategy(sid), analyst("continue"))["action"] == "retire") is retired

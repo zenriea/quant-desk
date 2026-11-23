@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from .. import db
 from ..research.strategy import MAX_UNIVERSE
+from ..units import default_drawdown_limit
 from . import prompts
 from .llm import LLM, Router, free_helpers
 
@@ -186,7 +187,7 @@ class RulesAnalyst:
         return {"decision": dec, "journal": body, "lessons": lessons, "allocation_pct": alloc,
                 "thesis": ctx["hypothesis"]["rationale"],
                 "exit_plan": "Exit per the tested rules; retire if live drawdown exceeds 1.5x the test drawdown.",
-                "invalidation": {"max_live_drawdown_pct": round(min(0.25, max(0.05, abs(t["max_drawdown"]) * 1.5)), 3),
+                "invalidation": {"max_live_drawdown_pct": default_drawdown_limit(t["max_drawdown"]),
                                  "review_after_days": 14, "min_trades_before_judging": 5,
                                  "conditions": "Live return falls more than 2.5 standard deviations below the test expectation."},
                 "revision_idea": None,

@@ -388,7 +388,7 @@ function renderKPIs(s) {
   $("#kpis").innerHTML = k.map(([l, v, sub, icon, meter]) => `<div class="kpi"><div class="label">${l}${outlineIcon(icon)}</div><div class="value">${v}</div><div class="sub">${sub}</div>${meter}</div>`).join("");
   $("#performance-stats").innerHTML = `
     <div class="performance-stat"><div class="label">vs. ${esc(a.benchmark_symbol)} buy &amp; hold</div><div class="value" id="equity-difference">–</div><small id="equity-comparison"></small></div>
-    <div class="performance-stat"><div class="label">vs. ${esc(a.benchmark_symbol)} at the same exposure</div><div class="value" id="equity-matched">–</div><small id="equity-matched-note"></small></div>
+    <div class="performance-stat"><div class="label">vs. benchmarks at the same exposure</div><div class="value" id="equity-matched">–</div><small id="equity-matched-note"></small></div>
     <div class="performance-stat"><div class="label">Fees paid</div><div class="value">${money(a.fees_paid, 2)}</div><small>${s.counts.fills} fills · ${s.counts.orders} orders</small></div>
     <div class="performance-stat"><div class="label">Crypto exposure</div><div class="value">${money(a.crypto_gross)}</div><small>Equity high-water mark ${money(a.peak)}</small></div>`;
   renderEquityComparison(equityInRange(state.equityRows, state.equityRange, Date.now() / 1000));
@@ -449,8 +449,8 @@ function renderEquityComparison(rows) {
   const bs = state.s?.account.benchmark_symbol || "QQQ";
   $("#equity-matched").textContent = !comparison ? "–" : pct(comparison.matchedDifference).replace("%", " pp");
   $("#equity-matched-note").textContent = !comparison ? "" :
-    `Average exposure ${pct(comparison.avgExposure, 1, false)} · ${bs} at that exposure ${pct(comparison.matched)}`;
-  $("#equity-matched-note").title = "Between chart snapshots, the benchmark holds the share of equity the account had in the market and keeps the rest in cash. Approximate: it uses the snapshots shown in the chart range.";
+    `Average exposure ${pct(comparison.avgExposure, 1, false)}${comparison.cryptoExposure > 0 ? ` (stocks ${pct(comparison.stockExposure, 1, false)}, crypto ${pct(comparison.cryptoExposure, 1, false)})` : ""} · matched benchmark ${pct(comparison.matched)}`;
+  $("#equity-matched-note").title = `Between chart snapshots, the account's stock share of equity is held in ${bs}, its crypto share in BTC-USD, and the rest in cash, using the earlier snapshot's exposure. Approximate: it uses the snapshots shown in the chart range.`;
 }
 function dateSpan(start, end) {
   return day(start) === day(end) ? day(start) : `${day(start)} – ${day(end)}`;
@@ -1109,7 +1109,7 @@ $("#tab-body").addEventListener("click", async (e) => {
 
 // ---------------------------------------------------------------- drawers
 let closeDrawer = null, drawerRequest = 0, drawerOrigin = null;
-const recordRoute = /^#(experiment|strategy|order|llm|compare|replay)-(\d+)$/;
+const recordRoute = /^#(experiment|strategy|order|llm|compare|replay)-(\d+)(?:-(\d+))?$/;
 
 async function drawerRecord(path) {
   const request = ++drawerRequest, hash = location.hash;
@@ -1336,7 +1336,7 @@ async function openStrategy(id) {
        : `<div class="secondary">Paper return: ${pct(s.live.return)} over ${s.live.days_live} days on ${money(s.allocation)} · realised ${money(s.live.realized, 2)} ·
       unrealised ${money(s.live.unrealized, 2)} · fees ${money(s.live.fees, 2)} · avg slippage ${s.live.avg_slippage_bps ?? "-"} bp · avg spread ${s.live.avg_spread_bps ?? "-"} bp</div>`}</div>
      <div class="section"><h4>Historical sealed test</h4>${metricsTable([["Sealed test", s.expectations?.test, s.expectations?.windows?.test]], { cagr: showAnnualizedReturn(s.expectations?.windows?.test) })}</div>
-    <div class="section"><h4>Reviews</h4>${(s.reviews || []).map((r) => `<div style="padding:8px 0;border-top:1px solid var(--border)"><b>${esc(r.kind)}</b> <span class="muted">${dt(r.ts)} · ${authorLabel(r.author)}</span>
+    <div class="section"><h4>Reviews</h4>${(s.reviews || []).map((r) => `<div style="padding:8px 0;border-top:1px solid var(--border)"><b>${esc(r.kind)}</b> <span class="muted">${dt(r.ts)} · ${authorLabel(r.author)}</span> · <a href="#replay-${s.id}-${Math.floor(r.ts)}">Replay to this review</a>
       <div class="pre secondary" style="font-size:13px">${rich(r.rationale)}</div></div>`).join("") || `<div class="muted">No reviews yet (daily).</div>`}</div>`, `#strategy-${s.id}`);
 }
 // The same reading of the drawdown limit as the server's (quantdesk/units.py): a fraction, never a percentage.
@@ -1358,12 +1358,13 @@ function replaySide(r) {
     : l.status_note && l.status !== "filled" ? ` <span class="muted">· ${esc(l.status_note)}</span>` : ""}`;
   return { back, paper };
 }
-async function openReplay(id) {
-  const r = await drawerRecord(`/api/strategies/${encodeURIComponent(id)}/replay`);
+// `until`: replay only what was known then (a review's timestamp), so later trades don't blur it.
+async function openReplay(id, until) {
+  const r = await drawerRecord(`/api/strategies/${encodeURIComponent(id)}/replay${until ? `?until=${encodeURIComponent(until)}` : ""}`);
   if (!r) return;
   const st = r.strategy, sm = r.summary || {}, rows = r.rows || [];
   const first = r.first_divergence == null ? null : rows[r.first_divergence];
-  const label = { both: "same", live_only: "paper only", shadow_only: "backtest only" };
+  const label = { both: "same", fill_differs: "fill differs", live_only: "paper only", shadow_only: "backtest only" };
   const delay = r.timing?.data_delay_seconds ? ` + ${Math.round(r.timing.data_delay_seconds / 60)} min data delay` : "";
   const focus = first ? (() => { const { back, paper } = replaySide(first); return `<div class="section replay-first"><h3>First divergence · ${esc(first.symbol)} ${esc(first.side)}</h3>
     <dl class="spec"><dt>Signal bar</dt><dd>${esc(barText(first.bar))}</dd>
@@ -1372,18 +1373,20 @@ async function openReplay(id) {
       ${first.live?.rule_values?.length ? `<dt>Rule values paper saw</dt><dd><ul class="notes">${first.live.rule_values.map((v) => `<li><code>${esc(v)}</code></li>`).join("")}</ul></dd>` : ""}
       ${first.rule_values_now?.length ? `<dt>Same rule on today's data</dt><dd><ul class="notes">${first.rule_values_now.map((v) => `<li><code>${esc(v)}</code></li>`).join("")}</ul></dd>` : ""}
       ${(first.nearby_notes || []).length ? `<dt>Around that bar</dt><dd><ul class="notes">${first.nearby_notes.map((n) => `<li><span class="muted num">${esc(clock24(n.ts))}</span> ${esc(n.title)}</li>`).join("")}</ul></dd>` : ""}</dl>
-    <p class="muted cell-sub">Different rule values on the same bar mean the stored bar changed after paper acted (late or revised data). The same values with no order point at timing: a restart, a data wait or the risk engine.</p></div>`; })()
-    : `<div class="section"><p>${rows.length ? "Paper trading and the backtest made the same decisions on every bar so far." : "No signals yet on either side."}</p></div>`;
+    <p class="muted cell-sub">${first.match === "fill_differs" ? "Both sides signalled on this bar; only one filled. Paper's order status says why (risk engine, expiry, liquidity)."
+      : "Different rule values on the same bar mean the stored bar changed after paper acted (late or revised data). The same values with no order point at timing: a restart, a data wait or the risk engine."}</p></div>`; })()
+    : `<div class="section"><p>${rows.length ? `Paper trading and the backtest signalled and filled the same way on every bar${r.span?.until ? " up to then" : " so far"}.` : "No signals yet on either side."}</p></div>`;
   drawer(`Replay: ${st.name} v${st.version}`, `
     <div class="section"><p class="secondary">${r.span?.bars ?? 0} bars since ${esc(dt(r.span?.start))}. The backtest replays the frozen rules on today's stored bars with modelled costs, filling ${r.timing?.backtest_fill_delay_bars ? `${r.timing.backtest_fill_delay_bars + 1} bars` : "one bar"} after the signal.</p>
-      <dl class="test-headline"><div><dt>Same decision</dt><dd>${sm.matched ?? 0}</dd></div><div><dt>Paper only</dt><dd>${sm.live_only ?? 0}</dd></div>
-        <div><dt>Backtest only</dt><dd>${sm.shadow_only ?? 0}</dd></div><div><dt>Backtest trades</dt><dd>${sm.shadow_trades ?? 0} <span class="muted">${sm.shadow_return == null ? "" : pct(sm.shadow_return)}</span></dd></div></dl>
+      ${r.span?.until ? `<p class="replay-until">Replaying up to <b>${esc(dt(r.span.until))}</b>, as a review then saw it. <a href="#replay-${st.id}">Replay to now</a></p>` : ""}
+      <dl class="test-headline"><div><dt>Same signal and fill</dt><dd>${sm.matched ?? 0}</dd></div><div><dt>Fill differs</dt><dd>${sm.fill_differs ?? 0}</dd></div>
+        <div><dt>Paper only</dt><dd>${sm.live_only ?? 0}</dd></div><div><dt>Backtest only</dt><dd>${sm.shadow_only ?? 0}</dd></div><div><dt>Backtest trades</dt><dd>${sm.shadow_trades ?? 0} <span class="muted">${sm.shadow_return == null ? "" : pct(sm.shadow_return)}</span></dd></div></dl>
       <p><a href="#" data-strat="${st.id}">Back to ${esc(st.name)}</a></p></div>
     ${focus}
     ${rows.length ? `<div class="section"><h3>Every decision</h3><div class="tbl-scroll"><table class="tbl replay-tbl"><thead><tr><th scope="col">Signal bar</th><th scope="col">Symbol</th><th scope="col">Side</th><th scope="col">Backtest</th><th scope="col">Paper</th><th scope="col">Match</th></tr></thead><tbody>
       ${rows.map((x, i) => { const { back, paper } = replaySide(x); return `<tr class="${x.match !== "both" ? "diverged" : ""}${i === r.first_divergence ? " first" : ""}">
         <td class="num">${x.bar == null ? `<span class="muted">${esc(x.live?.reason || "")}</span>` : esc(dt(x.bar))}</td><td>${esc(x.symbol)}</td><td>${esc(x.side)}</td><td>${back}</td><td>${paper}</td>
-        <td><span class="match-${esc(x.match)}">${esc(label[x.match])}</span></td></tr>`; }).join("")}</tbody></table></div></div>` : ""}`, `#replay-${st.id}`);
+        <td><span class="match-${esc(x.match)}">${esc(label[x.match])}</span></td></tr>`; }).join("")}</tbody></table></div></div>` : ""}`, `#replay-${st.id}${until ? `-${Math.floor(until)}` : ""}`);
 }
 async function openOrder(id) {
   const o = await drawerRecord(`/api/orders/${encodeURIComponent(id)}`);
@@ -1797,7 +1800,7 @@ function openFromHash(event) {
   const m = recordRoute.exec(hash);
   if (m) {
     if (m[1] === "llm" && !isOperator()) { setHash("research", true); goTo("research", { hash: false }); return true; }
-    ({ experiment: openExperiment, strategy: openStrategy, order: openOrder, llm: openLLM, compare: openCompare, replay: openReplay })[m[1]](m[2]).catch(fail);
+    ({ experiment: openExperiment, strategy: openStrategy, order: openOrder, llm: openLLM, compare: openCompare, replay: openReplay })[m[1]](m[2], m[3]).catch(fail);
   }
 }
 window.addEventListener("hashchange", openFromHash);

@@ -301,7 +301,7 @@ async def state():
 @app.get("/api/equity", dependencies=[Depends(require_auth)])
 async def equity(points: int = Query(600, ge=2, le=3000)):
     def f():
-        rows = db.q("SELECT ts, equity, benchmark_equity, crypto_benchmark_equity, gross, cash FROM equity_snapshots ORDER BY ts")
+        rows = db.q("SELECT ts, equity, benchmark_equity, crypto_benchmark_equity, gross, crypto_gross, cash FROM equity_snapshots ORDER BY ts")
         if len(rows) > points:
             step = (len(rows) - 1) / (points - 1)
             idx = sorted({int(round(i * step)) for i in range(points)})
@@ -478,14 +478,15 @@ async def strategy(sid: int):
 
 
 @app.get("/api/strategies/{sid}/replay", dependencies=[Depends(require_auth)])
-async def strategy_replay(sid: int):
-    """Bar-by-bar comparison of live paper decisions with the frozen rules' shadow backtest."""
+async def strategy_replay(sid: int, until: float | None = Query(None, gt=0)):
+    """Bar-by-bar comparison of live paper decisions with the frozen rules' shadow backtest.
+    ``until`` (unix seconds) replays only what was known then, e.g. when a review ran."""
     def f():
         from ..agent.replay import replay
         s = db.q1("SELECT * FROM strategies WHERE id=?", (sid,))
         if not s:
             raise HTTPException(404, "strategy not found")
-        return replay(dict(s))
+        return replay(dict(s), until)
     return await run_in_threadpool(f)
 
 

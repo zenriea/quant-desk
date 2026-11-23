@@ -57,3 +57,48 @@ def test_replay_endpoint_is_public_read_and_404s(env, monkeypatch):
     r = client.get(f"/api/strategies/{sid}/replay")
     assert r.status_code == 200 and r.json()["rows"] == []
     assert client.get("/api/strategies/999/replay").status_code == 404
+
+
+def _setup():
+    from quantdesk import clock, db
+    from quantdesk.marketdata.freshness import expected_last_bar
+    last = expected_last_bar("CRYPTO", clock.now())
+    closes = [100.0] * 20 + [110, 110, 90, 90, 110, 110, 90, 90, 100, 100]
+    start = last - (len(closes) - 1) * 900
+    put_bars("BTC-USD", closes, start=start)
+    sid = make_strategy({"universe": ["BTC-USD"], "entry": "close > 105", "exit": "close < 95"}, allocation=1000,
+                        venue="CRYPTO")
+    bars = [start + i * 900 for i in range(len(closes))]
+    db.ex("UPDATE strategies SET activated_at=?, created_at=? WHERE id=?", (bars[19], bars[19], sid))
+    return sid, bars
+
+
+def test_a_rejected_paper_buy_the_backtest_filled_is_a_divergence(env):
+    from quantdesk import db
+    from quantdesk.agent.replay import replay
+    sid, bars = _setup()
+    _order(sid, bars[20], "BTC-USD", "buy", status="rejected")   # same signal, the risk engine said no
+    out = replay(dict(db.q1("SELECT * FROM strategies WHERE id=?", (sid,))))
+    first = out["rows"][out["first_divergence"]]
+    assert out["first_divergence"] == 0 and first["match"] == "fill_differs"
+    assert first["shadow"]["fill"] and first["live"]["status"] == "rejected" and first["live"]["fill"] is None
+    assert out["summary"]["fill_differs"] == 1 and out["summary"]["matched"] == 0
+
+
+def test_replay_until_a_review_shows_only_what_was_known_then(env):
+    from quantdesk import db
+    from quantdesk.agent.replay import replay
+    sid, bars = _setup()
+    _order(sid, bars[20], "BTC-USD", "buy", price=110.2)
+    _order(sid, bars[22], "BTC-USD", "sell", price=89.9)
+    s = dict(db.q1("SELECT * FROM strategies WHERE id=?", (sid,)))
+    # Bar 22 closed at bars[23]; paper's sell for it was created a minute later. A review in between
+    # sees the backtest's exit but no paper order yet, and nothing after it.
+    review_at = bars[23] + 30
+    out = replay(s, until=review_at)
+    assert [(r["bar"], r["side"], r["match"]) for r in out["rows"]] == [(bars[20], "buy", "both"),
+                                                                       (bars[22], "sell", "shadow_only")]
+    assert out["span"]["until"] == review_at and out["span"]["bars"] == 5
+    early = replay(s, until=bars[22] + 300)                # bar 22 had not closed: its exit is not known yet
+    assert [(r["bar"], r["side"]) for r in early["rows"]] == [(bars[20], "buy")]
+    assert len(replay(s)["rows"]) > 2                       # without a cutoff, later bars appear
