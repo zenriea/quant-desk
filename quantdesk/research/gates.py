@@ -36,7 +36,7 @@ def evaluate(result: dict, g: dict) -> dict:
         _g("test_return_cost_x2", c["test_cost_x2"].get("total_return"), ">", g["min_cost_stress_return"],
            "Must survive doubled fees, spread and impact."),
         _g("test_sharpe_delay_1bar", c["test_delay_1bar"].get("sharpe"), ">", g["min_delay_stress_sharpe"],
-           "Must not depend on executing exactly at the next bar."),
+           "Must survive executing one bar later than paper trading can."),
         _g("neighbor_positive_frac", c.get("neighbor_positive_frac"), ">=", g["min_neighbor_positive_frac"],
            "Nearby parameter values should also work (not a lucky point)."),
         _g("subperiod_positive_frac", c.get("subperiod_positive_frac"), ">=", g["min_subperiod_positive_frac"],

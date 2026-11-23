@@ -11,6 +11,16 @@ from ..venues import VENUES
 SIP_DELAY = 16 * 60
 
 
+def signal_delay_bars(venue: str) -> int:
+    """Whole bars between a bar's close and the open that paper execution can first reach.
+
+    NASDAQ: bar t is usable SIP_DELAY (16 min) after it closes, i.e. just after bar t+2 opens,
+    so the backtest's earliest matching fill is the open of t+1+1. Crypto: the open of t+1."""
+    if venue != "NASDAQ":
+        return 0
+    return SIP_DELAY // VENUES[venue].bar_seconds
+
+
 def bar_closed(venue: str, ts: int, now: float) -> bool:
     """Bar has ended (and, for NASDAQ, passed the free-plan SIP delay). Session membership of
     NASDAQ bars is enforced at ingest (venues.in_regular_session)."""

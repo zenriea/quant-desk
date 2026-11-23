@@ -17,6 +17,7 @@ import math
 import numpy as np
 
 from ..marketdata import store
+from ..marketdata.freshness import signal_delay_bars
 from ..venues import VENUES
 from . import backtest as B
 from . import dsl, metrics
@@ -176,6 +177,7 @@ def run_experiment(spec: dict, costs_cfg: dict, research_cfg: dict, benchmark: s
     warm = required_warmup(spec, spec.get("params") or {})
     W = split_windows(T, warm, research_cfg["train_frac"], research_cfg["val_frac"])
     liq = B.liquidity_arrays(panel, venue)
+    base_delay = signal_delay_bars(venue)  # match when paper trading can first act on a signal
     sig_cache: dict = {}
 
     def sig_for(p):
@@ -184,9 +186,9 @@ def run_experiment(spec: dict, costs_cfg: dict, research_cfg: dict, benchmark: s
             sig_cache[key] = compute_signals(spec, p, panel, sandbox_runner)
         return sig_cache[key]
 
-    def bt(p, win, cost=costs_cfg, delay=0):
+    def bt(p, win, cost=costs_cfg, extra_delay=0):
         s, e = W[win] if isinstance(win, str) else win
-        return B.run(spec, panel, sig_for(p), cost, s, e, delay=delay, liquidity=liq,
+        return B.run(spec, panel, sig_for(p), cost, s, e, delay=base_delay + extra_delay, liquidity=liq,
                      max_participation=max_participation)
 
     # ---- 1. grid search on TRAIN only
@@ -203,7 +205,7 @@ def run_experiment(spec: dict, costs_cfg: dict, research_cfg: dict, benchmark: s
     # ---- 2. VALIDATION
     val = bt(chosen, "validation")
     val_cost2 = bt(chosen, "validation", C.scaled(costs_cfg, 2.0))
-    val_delay = bt(chosen, "validation", delay=1)
+    val_delay = bt(chosen, "validation", extra_delay=1)
     # ---- 3. challenges on pre-test data (train+validation)
     pre = (W["train"][0], W["validation"][1])
     pre_run = bt(chosen, pre)
@@ -228,13 +230,14 @@ def run_experiment(spec: dict, costs_cfg: dict, research_cfg: dict, benchmark: s
     windows = {k: {"start": _ts(panel, s), "end": _ts(panel, e - 1), "bars": e - s} for k, (s, e) in W.items()}
     # ---- 4. FREEZE before touching the test window
     frozen = {"spec_hash": spec_hash(spec), "chosen_params": chosen, "windows": windows,
-              "data_end": _ts(panel, T - 1), "max_participation": max_participation}
+              "data_end": _ts(panel, T - 1), "max_participation": max_participation,
+              "execution_delay_bars": base_delay}
     if on_freeze:
         on_freeze(frozen)
     # ---- 5. sealed TEST (evaluated once)
     test = bt(chosen, "test")
     test_cost2 = bt(chosen, "test", C.scaled(costs_cfg, 2.0))
-    test_delay = bt(chosen, "test", delay=1)
+    test_delay = bt(chosen, "test", extra_delay=1)
     s, e = W["test"]
     bench_univ = B.buy_and_hold(panel, spec["universe"], s, e, costs_cfg, venue)
     bench_venue = B.buy_and_hold(panel, [benchmark], s, e, costs_cfg, venue) if benchmark in panel["symbols"] else {}
@@ -260,7 +263,7 @@ def run_experiment(spec: dict, costs_cfg: dict, research_cfg: dict, benchmark: s
     }
     out = {
         "strategy_kind": spec.get("kind", "dsl"),
-        "venue": venue, "spec_hash": frozen["spec_hash"], "windows": windows, "chosen_params": chosen,
+        "venue": venue, "spec_hash": frozen["spec_hash"], "execution_delay_bars": base_delay, "windows": windows, "chosen_params": chosen,
         "grid_results": grid_results,
         "train": _slim(train.metrics),
         "validation": _slim(val.metrics),
