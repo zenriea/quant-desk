@@ -157,6 +157,9 @@ caps and broad unleveraged ETFs, plus crypto majors; saved operator settings are
 * **Read-only view**: set `QD_VIEWER_PASSWORD` (12+ characters, different from the operator
   password) to give people you show results to their own login. They see the desk, journal and
   records, but no controls, limits, audit log or model prompts; the server refuses every write.
+* **Public view**: set `QD_PUBLIC_VIEW=1` to show that same read-only view to anyone with the URL,
+  no password needed. Your strategies, positions, journal and research become public. The operator
+  uses **Sign in** at the top for controls. Requires `QD_ADMIN_PASSWORD`.
 * **Keyboard**: press `?` in the dashboard for shortcuts. Emergency stop deliberately has none.
   Records tabs have their own addresses, e.g. `/#limits` opens Limits & system.
 * **Grounded language**: every journal entry stores the record IDs it refers to. LLM-written
