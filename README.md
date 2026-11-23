@@ -1,5 +1,5 @@
 # QuantDesk: an autonomous AI research and paper-trading desk
-
+https://quantdesk-trade.up.railway.app/
 An AI analyst that researches NASDAQ equities and liquid crypto on its own. It forms testable
 hypotheses, backtests them with realistic costs on a sealed chronological test window, challenges
 the results, and allocates **virtual** money only when deterministic gates pass. It then trades
