@@ -1,12 +1,13 @@
 // QuantDesk UI. Vanilla JS; every server string is escaped before it touches the DOM.
 import { changeDirection, deskHealth, displayedActivity, equityComparison, equityInRange, formatLimit, friendlyGates, fromDisplay, gateCount, gateLabel,
-  checkinSummary, holdoutLabel, journalMatches, journalPresentation, limitUsage, LIMIT_FIELDS, parseSymbols, sameValue, symbolDiff, showAnnualizedReturn, toDisplay, tradingVerdict, UNIT_SUFFIX } from "./ui-model.mjs?v=audit-fixes";
+  checkinSummary, holdoutLabel, journalMatches, journalPresentation, limitUsage, LIMIT_FIELDS, parseSymbols, sameValue, symbolDiff, showAnnualizedReturn, toDisplay, tradingVerdict, UNIT_SUFFIX,
+  GATE_ORDER, gateValue, gateThreshold, gateChecks, gateFailCounts, scatterLayout, headroom, paletteMatch } from "./ui-model.mjs?v=redesign-v2-layouts";
 
 const $ = (s, el = document) => el.querySelector(s);
 // Viewers (read-only share) see results, never controls, prompts or limits.
 const isOperator = () => state.role !== "viewer";
 const state = { s: null, journal: [], lastId: 0, filter: new Set(), tab: "research", charts: {}, symbol: null, es: null,
-  timers: [], booting: false, role: "operator", researchSort: { key: "id", dir: -1 }, researchRows: null, tabVersion: 0, lastRefresh: null, equityRows: [], equityRange: "all", equityDecimals: 0, tabKey: null };
+  timers: [], booting: false, role: "operator", researchSort: { key: "id", dir: -1 }, researchRows: null, researchView: "table", gateFilter: null, compare: new Set(), tabVersion: 0, lastRefresh: null, equityRows: [], equityRange: "all", equityDecimals: 0, tabKey: null };
 
 // ---------------------------------------------------------------- helpers
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -414,7 +415,7 @@ function ensureEquityChart() {
   const mk = (v, style) => chart.addLineSeries({ color: cssVar(v), lineWidth: 1.5, lineStyle: style, priceLineVisible: false, lastValueVisible: false });
   // The account line is ink; it takes the reserved live cyan only while capital is actually deployed.
   const area = () => { const live = (state.s?.positions.length || 0) > 0;
-    return { lineColor: cssVar(live ? "--live" : "--text-primary"), topColor: live ? cssVar("--live-soft") : "rgba(0,0,0,0)", bottomColor: "rgba(0,0,0,0)" }; };
+    return { lineColor: cssVar(live ? "--live" : "--accent"), topColor: live ? cssVar("--live-soft") : "rgba(0,0,0,0)", bottomColor: "rgba(0,0,0,0)" }; };
   const bench = mk("--series-2", 2), btc = mk("--series-3", 1);  // dashed QQQ, dotted BTC  // added first so the account line draws on top
   const acct = chart.addAreaSeries({ ...area(), lineWidth: 2.5, priceLineVisible: false, lastValueVisible: true });
   const c = { chart, acct, bench, btc };
@@ -476,8 +477,8 @@ function renderEquity() {
   });
   const bs = state.s?.account.benchmark_symbol || "QQQ";
   const live = (state.s?.positions.length || 0) > 0;
-  c.acct.applyOptions({ lineColor: cssVar(live ? "--live" : "--text-primary"), topColor: live ? cssVar("--live-soft") : "rgba(0,0,0,0)" });
-  $("#equity-legend").innerHTML = [[live ? "--live" : "--text-primary", "Account (net of costs)", ""], ["--series-2", `${bs} buy & hold`, "dashed"], ["--series-3", "BTC-USD buy & hold", "dotted"]]
+  c.acct.applyOptions({ lineColor: cssVar(live ? "--live" : "--accent"), topColor: live ? cssVar("--live-soft") : "rgba(0,0,0,0)" });
+  $("#equity-legend").innerHTML = [[live ? "--live" : "--accent", "Account (net of costs)", ""], ["--series-2", `${bs} buy & hold`, "dashed"], ["--series-3", "BTC-USD buy & hold", "dotted"]]
     .map(([v, l, k]) => `<span><span class="sw ${k}" style="--sw:var(${v})"></span>${esc(l)}</span>`).join("") +
     `<a class="chart-credit" href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener">Charts: TradingView Lightweight Charts</a>`;
   $("#equity-since").textContent = rows.length ? dateSpan(rows[0].ts, rows.at(-1).ts) : "No recorded marks in this period";
@@ -714,32 +715,114 @@ function drawResearch(body = $("#tab-body")) {
   const ex = state.researchRows || [];
   if (!ex.length) { body.innerHTML = emptyState("The next idea starts here.", "No experiments yet. The first research cycle begins once the worker has market data. Every hypothesis will have a frozen test and a recorded decision."); return; }
   const passed = ex.filter((e) => e.status === "passed").length;
+  const all = ex, shown = state.gateFilter ? ex.filter((e) => (e.gates?.failed || []).includes(state.gateFilter)) : ex;
   const { key, dir } = state.researchSort;
   const direction = textSort(key) ? (dir > 0 ? "A to Z" : "Z to A") : (dir > 0 ? "Low to high" : "High to low");
   const focused = document.activeElement;
   const sortFocus = focused.matches("#research-sort, #research-direction") ? `#${focused.id}` :
     focused.matches(".research-tbl [data-sort]") ? `[data-sort="${focused.dataset.sort}"]` : null;
   const th = (k, label, cls = "") => `<th class="${cls}" aria-sort="${k === key ? (dir > 0 ? "ascending" : "descending") : "none"}"><button type="button" class="sort" data-sort="${k}">${label}<svg viewBox="0 0 10 10" aria-hidden="true"><path d="${k !== key ? "M2 4l3-3 3 3M2 6l3 3 3-3" : dir > 0 ? "M2 6l3-3 3 3" : "M2 4l3 3 3-3"}"/></svg></button></th>`;
-  body.innerHTML = `<div class="research-summary"><span class="summary-total"><b>${ex.length}</b> experiments in this view</span>
+  body.innerHTML = `${researchHero(all)}${researchToolbar(all)}
+    ${state.researchView === "matrix" ? gateMatrix(sortedResearch(shown)) : `<div class="research-summary"><span class="summary-total"><b>${shown.length}</b> experiments in this view</span>
     <span class="summary-count"><span class="${passed ? "up" : ""}">${passed}</span> passed gates</span><span class="summary-count">${ex.filter((e) => e.status === "failed").length} missed gates</span></div>
     <p class="research-note">Historical screens use past data, which may overlap earlier tests. Forward paper results come from running frozen rules on new market data.</p>
     <div class="phone-sort"><label for="research-sort">Sort by</label><select class="sel" id="research-sort">
       ${Object.entries(RESEARCH_LABELS).map(([k, label]) => `<option value="${k}"${k === key ? " selected" : ""}>${label}</option>`).join("")}</select>
       <button class="btn small" type="button" id="research-direction" aria-label="Reverse sort order, currently ${direction}">${direction} <span aria-hidden="true">${dir > 0 ? "↑" : "↓"}</span></button></div>
-    <div class="tbl-scroll"><table class="tbl research-tbl"><thead><tr>${th("id", "#")}${th("title", "Hypothesis")}${th("status", "Status")}${th("ret", "Historical return", "r")}
+    <div class="tbl-scroll"><table class="tbl research-tbl"><thead><tr><th class="cmp-col"><span class="sr-only">Compare</span></th>${th("id", "#")}${th("title", "Hypothesis")}${th("status", "Status")}${th("ret", "Historical return", "r")}
     ${th("sharpe", "Sharpe", "r")}${th("trades", "Trades", "r")}${th("gates", "Gates")}</tr></thead><tbody>
-    ${sortedResearch(ex).map((e) => `<tr class="clickable" data-exp="${e.id}"><td class="num id-cell">#${e.id}</td><td class="hyp"><a href="#" data-exp="${e.id}">${esc(e.title)}</a><div class="muted cell-sub">${esc(e.venue)} · ${authorLabel(e.author)} · ${ago(e.created_at)}</div></td>
+    ${sortedResearch(shown).map((e) => `<tr class="clickable" data-exp="${e.id}"><td class="cmp-col"><input type="checkbox" data-compare="${e.id}" aria-label="Compare #${e.id}"${state.compare.has(e.id) ? " checked" : ""}></td><td class="num id-cell">#${e.id}</td><td class="hyp"><a href="#" data-exp="${e.id}">${esc(e.title)}</a><div class="muted cell-sub">${esc(e.venue)} · ${authorLabel(e.author)} · ${ago(e.created_at)}</div></td>
       <td data-label="Status">${expStatus(e.status)}${e.strategy_id ? `<div class="cell-sub"><span class="${e.strategy_probe ? "probe-chip" : "strategy-chip"}">${e.strategy_probe ? `probe #${e.strategy_id} · ${!e.strategy_status || e.strategy_status === "active" ? "forward test" : esc(e.strategy_status)}` : `strategy #${e.strategy_id}${e.strategy_status && e.strategy_status !== "active" ? ` · ${esc(e.strategy_status)}` : ""}`}</span></div>` : ""}</td>
       <td class="r" data-label="Historical return"><span class="num ${signCls(e.test?.total_return)}">${pct(e.test?.total_return)}</span>${e.test ? `<div class="muted cell-sub">${holdoutLabel(e.leakage?.holdout_reuse_count, e.leakage?.deflation_window_days)}</div>` : ""}</td><td class="r num" data-label="Sharpe">${num(e.test?.sharpe)}</td>
       <td class="r num" data-label="Trades">${e.test?.n_trades ?? "–"}</td><td class="gates" data-label="Gates">${gatesCell(e)}</td></tr>`).join("")}</tbody></table></div>
-    <div class="research-note">Open an experiment to see its hypothesis, sealed test and gates${isOperator() ? ", or to start it as a probe" : ""}.</div>`;
+    <div class="research-note">Open an experiment to see its hypothesis, sealed test and gates${isOperator() ? ", or to start it as a probe" : ""}. Tick up to three to compare them.</div>`}
+    ${compareCard(all)}`;
   if (sortFocus) body.querySelector(sortFocus)?.focus({ preventScroll: true });
+}
+
+// ---------------------------------------------------------------- research widgets
+function researchHero(ex) {
+  const tested = ex.filter((e) => e.gates), passed = ex.filter((e) => e.status === "passed").length;
+  const fails = gateFailCounts(ex), top = GATE_ORDER.reduce((a, g) => fails[g] > (fails[a] || 0) ? g : a, null);
+  const { points, x0, y0 } = scatterLayout(ex);
+  const dot = (e) => e.strategy_id && (!e.strategy_status || e.strategy_status === "active") ? (e.strategy_probe ? "probe" : "live") : "other";
+  return `<section class="inv research-hero" aria-label="Sealed-test results">
+    <div class="hero-text"><div class="inv-label">Sealed-test results</div>
+      <div class="hero-big num">${passed}<span> / ${tested.length}</span></div>
+      <p class="hero-lead">${tested.length === 1 ? "idea" : "ideas"} cleared every gate.${top ? ` ${esc(gateLabel(top))} blocks the most: ${fails[top]} of ${tested.length}.` : ""}</p>
+      <div class="scatter-legend"><span><i class="sd live"></i>Live</span><span><i class="sd probe"></i>Probe</span><span><i class="sd other"></i>Not trading</span></div></div>
+    ${points.length ? `<div class="scatter" role="group" aria-label="Test return against Sharpe, one point per experiment">
+      <span class="scatter-axis x" style="left:${x0}%"></span><span class="scatter-axis y" style="top:${y0}%"></span>
+      <span class="scatter-cap tr">Sharpe →</span><span class="scatter-cap tl">↑ Test return</span>
+      ${points.map(({ e, x, y }) => `<button type="button" class="scatter-pt" data-exp="${e.id}" style="left:${x.toFixed(1)}%;top:${y.toFixed(1)}%"
+        title="#${e.id} ${esc(e.title)} · Sharpe ${num(e.test.sharpe)} · return ${pct(e.test.total_return)}" aria-label="Experiment #${e.id}: Sharpe ${num(e.test.sharpe)}, return ${pct(e.test.total_return)}"><i class="sd ${dot(e)}"></i>#${e.id}</button>`).join("")}
+    </div>` : `<p class="hero-lead muted">The chart fills in once experiments have a sealed-test result.</p>`}
+  </section>`;
+}
+function researchToolbar(ex) {
+  const fails = gateFailCounts(ex);
+  const seg = (v, label) => `<button type="button" data-research-view="${v}" aria-pressed="${state.researchView === v}" class="${state.researchView === v ? "active" : ""}">${label}</button>`;
+  return `<div class="research-toolbar"><span class="toolbar-label">Failed gate</span>
+    ${GATE_ORDER.map((g) => `<button type="button" class="fchip${state.gateFilter === g ? " on" : ""}" data-gate-filter="${g}" aria-pressed="${state.gateFilter === g}">${esc(gateLabel(g))} <b class="num">${fails[g]}</b></button>`).join("")}
+    ${state.gateFilter ? `<button type="button" class="btn small ghost" data-gate-filter="">Clear</button>` : ""}
+    <span class="spacer"></span><div class="range-control" role="group" aria-label="Research view">${seg("table", "Table")}${seg("matrix", "Gate matrix")}</div></div>`;
+}
+function gateCellHTML(c) {
+  if (!c) return `<td class="r muted">–</td>`;
+  return `<td class="r num gm ${c.pass ? "" : "miss"}" title="${esc(gateLabel(c.name))} ${esc(gateThreshold(c))}">${gateValue(c.name, c.value)}</td>`;
+}
+function gateMatrix(rows) {
+  if (!rows.length) return `<div class="empty compact">No experiments failed this gate.</div>`;
+  const th0 = rows.find((e) => e.gates)?.gates?.checks || [];
+  const thr = Object.fromEntries(th0.map((c) => [c.name, gateThreshold(c)]));
+  return `<div class="tbl-scroll"><table class="tbl gate-matrix"><thead><tr><th>Experiment</th>${GATE_ORDER.map((g) => `<th class="r">${esc(gateLabel(g))}<small>${esc(thr[g] || "")}</small></th>`).join("")}</tr></thead><tbody>
+    ${rows.map((e) => { const c = gateChecks(e);
+      return `<tr class="clickable" data-exp="${e.id}"><td class="hyp"><span class="muted num">#${e.id}</span> <a href="#" data-exp="${e.id}">${esc(e.title)}</a></td>${GATE_ORDER.map((g) => gateCellHTML(c[g])).join("")}</tr>`; }).join("")}
+    </tbody></table></div><p class="research-note">Accent values missed the threshold recorded with that experiment. Thresholds in the header are the latest recorded ones.</p>`;
+}
+function compareCard(ex) {
+  const picked = ex.filter((e) => state.compare.has(e.id));
+  if (!picked.length) return "";
+  const rows = [["Venue", (e) => esc(e.venue), false], ["Status", (e) => esc(EXP_STATUS[e.status] || e.status), false],
+    ["Test return", (e) => pct(e.test?.total_return), false], ...GATE_ORDER.map((g) => [gateLabel(g), (e) => { const c = gateChecks(e)[g]; return c ? gateValue(g, c.value) : "–"; }, g])];
+  return `<section class="compare" aria-label="Compare experiments"><div class="compare-h"><h3>Compare</h3><span class="muted">accent values missed a gate</span><span class="spacer"></span>
+      <button type="button" class="btn small ghost" data-compare-clear>Clear</button></div>
+    <div class="tbl-scroll"><table class="tbl"><thead><tr><th></th>${picked.map((e) => `<th><a href="#" data-exp="${e.id}">#${e.id} ${esc(e.title)}</a></th>`).join("")}</tr></thead><tbody>
+    ${rows.map(([label, f, g]) => `<tr><th scope="row">${esc(label)}</th>${picked.map((e) => { const c = g && gateChecks(e)[g];
+      return `<td class="num${c && !c.pass ? " gm miss" : ""}">${f(e)}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div></section>`;
+}
+
+// ---------------------------------------------------------------- strategy & limit widgets
+function allocationHero(st) {
+  const eq = state.s?.account?.equity || 0, live = st.filter((x) => x.status === "active" || x.status === "incubating");
+  const alloc = live.reduce((t, x) => t + (x.allocation || 0), 0), free = Math.max(0, eq - alloc);
+  const stat = (label, value, sub) => `<div><div class="inv-label">${label}</div><div class="hero-stat num">${value}</div><div class="inv-sub">${sub}</div></div>`;
+  const probes = live.filter((x) => x.probe).length;
+  return `<section class="inv alloc-hero" aria-label="Capital allocation"><div class="hero-stats">
+      ${stat("Allocated", money(alloc), `${eq ? pct(alloc / eq, 1, false) : "–"} of equity`)}
+      ${stat("Strategies", live.length - probes, "passed every gate")}${stat("Probes", probes, "forward tests, not evidence")}
+      ${stat("Unallocated", money(free), "cash and open headroom")}</div>
+    <div class="inv-label">Where the ${money(eq)} sits</div>
+    <div class="alloc-bar">${live.map((x) => `<button type="button" class="alloc-seg${x.probe ? " probe" : ""}" data-strat="${x.id}" style="flex:${Math.max(x.allocation || 0, eq * 0.04)}"
+        title="${esc(x.name)} ${money(x.allocation)}"><b>${esc(x.name)}</b><span class="num">${money(x.allocation)}</span></button>`).join("")}
+      <span class="alloc-seg free" style="flex:${Math.max(free, eq * 0.04)}"><b>Unallocated</b><span class="num">${money(free)}</span></span></div></section>`;
+}
+function headroomHero(s) {
+  const g = headroom(s), known = g.filter((x) => x.used != null), worst = known.reduce((a, x) => (x.used > (a?.used ?? -1) ? x : a), null);
+  const fmt = (x, v) => x.unit === "usd" ? money(v, 2) : pct(v, 1, false);
+  const C = 2 * Math.PI * 40;
+  return `<section class="inv headroom" aria-label="Limit headroom"><div class="inv-label">Headroom</div>
+    <p class="hero-lead">${!worst ? "Limits load with the desk state." : worst.used >= 100 ? `${esc(worst.label)} is at its cap.` : worst.used >= 80 ? `${esc(worst.label)} is close to its cap: ${Math.round(worst.used)}% used.` : `All limits clear. Closest to its cap: ${esc(worst.label.toLowerCase())}, ${Math.round(worst.used)}% used.`}</p>
+    <div class="gauges">${g.map((x) => `<div class="gauge ${x.used >= 100 ? "bad" : x.used >= 80 ? "warn" : ""}">
+      <div class="ring"><svg viewBox="0 0 96 96" aria-hidden="true"><circle cx="48" cy="48" r="40"/><circle class="arc" cx="48" cy="48" r="40" stroke-dasharray="${((x.used ?? 0) / 100 * C).toFixed(1)} ${C.toFixed(1)}"/></svg>
+        <b class="num">${x.used == null ? "–" : Math.round(x.used) + "%"}</b></div>
+      <div><div class="gauge-label">${esc(x.label)}</div><div class="inv-sub num">${x.value == null ? "–" : fmt(x, x.value)} of ${x.cap == null ? "–" : fmt(x, x.cap)}</div></div></div>`).join("")}</div></section>`;
 }
 async function renderStrategies(body, version, quiet) {
   const st = await api("/api/strategies");
   if (version !== state.tabVersion || unchanged(st, version, quiet)) return;
   if (!st.length) { body.innerHTML = emptyState("Nothing live yet.", "A strategy goes live when an experiment passes every gate. A probe goes live when an idea made money on its sealed test but missed a gate; you can also start one from any experiment."); return; }
-  body.innerHTML = `<div class="tbl-scroll"><table class="tbl"><thead><tr><th>Strategy</th><th>Holding now</th><th>Status</th><th class="r">Allocation</th><th class="r">Live return</th>
+  body.innerHTML = `${allocationHero(st)}<div class="tbl-scroll"><table class="tbl"><thead><tr><th>Strategy</th><th>Holding now</th><th>Status</th><th class="r">Allocation</th><th class="r">Live return</th>
     <th class="r">Sealed-test return</th><th class="r">Fills</th><th class="r">Avg slippage</th><th></th></tr></thead><tbody>
     ${st.map((s) => `<tr class="clickable" data-strat="${s.id}"><td><b><a href="#" data-strat="${s.id}">${esc(s.name)} v${s.version}</a></b>${s.probe ? ' <span class="probe-chip">probe</span>' : ""}<div class="muted" style="font-size:12px">${esc(s.venue)} · exp #${s.experiment_id}</div>
         <div class="sym-list" title="${esc(s.symbols.map((x) => x.symbol).join(", "))}">Trades ${symbolSummary(s.symbols)}</div></td>
@@ -853,7 +936,7 @@ async function renderSystem(body, version) {
   state.sys = sys;
   const v = (g, k) => sys.settings[g][k];
   const auditDetail = (d) => d == null ? "" : typeof d === "object" ? kv(d) : esc(d);
-  body.innerHTML = `
+  body.innerHTML = `${headroomHero(state.s)}
     <div class="section"><h3>Operating limits</h3>
       <p class="secondary section-lead">Only you can change these; the agent cannot. Gate profile: <b>${esc(sys.gate_profile)}</b>.
         Exploratory admits paper experiments, not validated trading edges. Strict requires stronger screening and a restricted rules language (causal DSL) that prevents looking ahead.
@@ -1053,9 +1136,22 @@ document.addEventListener("click", async (e) => {
 });
 $("#tab-body").addEventListener("change", (e) => {
   if (e.target.id === "research-sort") changeResearchSort(e.target.value);
+  const cmp = e.target.closest("[data-compare]");
+  if (cmp) {
+    const id = +cmp.dataset.compare;
+    if (cmp.checked && state.compare.size >= 3) { cmp.checked = false; toast("Compare holds up to three experiments", { tone: "bad" }); return; }
+    if (cmp.checked) state.compare.add(id); else state.compare.delete(id);
+    drawResearch();
+  }
 });
 $("#tab-body").addEventListener("click", async (e) => {
   if (e.target.closest("#research-direction")) { changeResearchSort(state.researchSort.key, true); return; }
+  if (e.target.closest("[data-compare]")) return;  // a checkbox in a clickable row: never opens the record
+  const gf = e.target.closest("[data-gate-filter]");
+  if (gf) { state.gateFilter = gf.dataset.gateFilter && gf.dataset.gateFilter !== state.gateFilter ? gf.dataset.gateFilter : null; drawResearch(); return; }
+  const rv = e.target.closest("[data-research-view]");
+  if (rv) { state.researchView = rv.dataset.researchView; drawResearch(); return; }
+  if (e.target.closest("[data-compare-clear]")) { state.compare.clear(); drawResearch(); return; }
   const sort = e.target.closest("[data-sort]");
   if (sort) {
     changeResearchSort(sort.dataset.sort, sort.dataset.sort === state.researchSort.key);
@@ -1337,7 +1433,7 @@ document.addEventListener("click", async (e) => {
     return;
   }
   const a = e.target.closest("[data-exp],[data-strat],[data-order],[data-llm]");
-  if (!a || e.target.closest(".gate-more") || a.closest("#tab-body [data-llm]") && !a.matches("a")) return;
+  if (!a || e.target.closest(".gate-more, [data-compare]") || a.closest("#tab-body [data-llm]") && !a.matches("a")) return;
   if (a.dataset.exp) { e.preventDefault(); openExperiment(a.dataset.exp).catch(fail); }
   else if (a.dataset.strat) { e.preventDefault(); openStrategy(a.dataset.strat).catch(fail); }
   else if (a.dataset.order) { e.preventDefault(); openOrder(a.dataset.order).catch(fail); }
@@ -1665,7 +1761,7 @@ const TAB_KEYS = ["research", "strategies", "orders", "market", "system"];
 const shortcutList = () => [
   ["?", "Show this list"], ["/", isOperator() ? "Ask the desk" : null], ["O", "Overview"], ["J", "Analyst journal"],
   [`1–${isOperator() ? 5 : 4}`, `Views: ${TAB_KEYS.filter((k) => k !== "system" || isOperator()).map((k) => $(`#tabs [data-tab="${k}"]`).textContent).join(", ")}`],
-  ["T", "Switch light / dark theme"], ["Esc", "Close a drawer or dialog"],
+  ["Ctrl K", "Jump to a screen, experiment or action"], ["T", "Switch light / dark theme"], ["Esc", "Close a drawer or dialog"],
 ].filter(([, what]) => what);
 function showShortcuts() {
   if ($(".confirm-dialog.keys")) return;
@@ -1694,6 +1790,95 @@ function showAbout() {
   document.body.appendChild(d); d.showModal(); d.querySelector("button").focus();
 }
 $("#btn-about").addEventListener("click", showAbout);
+// ---------------------------------------------------------------- jump palette (Ctrl+K)
+// Navigation only: desk controls (pause, stop, flatten) stay explicit buttons and are never listed here.
+async function paletteItems() {
+  const screens = [["overview", "Overview"], ["pipeline", "Pipeline"], ["research", "Research"], ["strategies", "Strategies"], ["orders", "Orders & fills"],
+    ["market", "Market"], ["journal", "Analyst journal"], ...(isOperator() ? [["system", "Limits & system"]] : [])]
+    .map(([k, label]) => ({ group: "Screen", label, run: () => goTo(k) }));
+  if (!state.researchRows) { try { state.researchRows = await api("/api/experiments"); } catch { state.researchRows = []; } }
+  const exps = (state.researchRows || []).map((e) => ({ group: "Experiment", label: `#${e.id} ${e.title}`, hint: EXP_STATUS[e.status] || e.status, run: () => setHash(`experiment-${e.id}`) }));
+  const strats = (state.s?.strategies || []).map((x) => ({ group: "Strategy", label: `${x.name} v${x.version}`, hint: x.probe ? "probe" : x.status, run: () => setHash(`strategy-${x.id}`) }));
+  const actions = [{ group: "Action", label: "Switch light / dark theme", run: () => $("#btn-theme").click() },
+    ...Object.entries(LAYOUTS).map(([k, label]) => ({ group: "Layout", label: `${label} layout`, hint: document.documentElement.dataset.layout === k ? "current" : "",
+      run: () => { applyLayout(k); try { localStorage.setItem("qd-layout", k); } catch {} } })),
+    { group: "Action", label: "Keyboard shortcuts", run: showShortcuts },
+    ...(isOperator() ? [{ group: "Action", label: "Ask the desk", run: () => { goTo("journal"); $("#ask-input").focus(); } }] : [])];
+  return [...screens, ...actions, ...strats, ...exps];
+}
+async function openPalette() {
+  if ($(".palette")) return;
+  const d = document.createElement("dialog");
+  d.className = "palette";
+  d.setAttribute("aria-label", "Jump to a screen, experiment or action");
+  d.innerHTML = `<div class="pal-in"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+    <input type="text" placeholder="Jump to a screen, experiment or action" aria-label="Jump to" aria-controls="pal-list" autocomplete="off"><kbd>esc</kbd></div>
+    <ul class="pal-list" id="pal-list" role="listbox"></ul><div class="pal-foot">↑↓ move · ↵ open · desk controls have no shortcut</div>`;
+  document.body.appendChild(d); d.showModal();
+  const input = d.querySelector("input"), list = d.querySelector("ul"), all = await paletteItems();
+  let shown = [], idx = 0;
+  const draw = () => {
+    shown = all.filter((x) => paletteMatch(x, input.value)).slice(0, 50); idx = Math.min(idx, Math.max(0, shown.length - 1));
+    list.innerHTML = shown.length ? shown.map((x, i) => `<li role="option" id="pal-${i}" aria-selected="${i === idx}" data-i="${i}"><span class="pal-g">${esc(x.group)}</span><span class="pal-l">${esc(x.label)}</span><span class="pal-h">${esc(x.hint || "")}</span></li>`).join("")
+      : `<li class="pal-empty">No matches.</li>`;
+    input.setAttribute("aria-activedescendant", shown.length ? `pal-${idx}` : "");
+    list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  };
+  const run = (i) => { const x = shown[i]; if (!x) return; d.close(); x.run(); };
+  input.addEventListener("input", () => { idx = 0; draw(); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); idx = (idx + (e.key === "ArrowDown" ? 1 : -1) + shown.length) % Math.max(1, shown.length); draw(); }
+    else if (e.key === "Enter") { e.preventDefault(); run(idx); }
+  });
+  list.addEventListener("click", (e) => { const li = e.target.closest("[data-i]"); if (li) run(+li.dataset.i); });
+  d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
+  d.addEventListener("close", () => d.remove());
+  draw(); input.focus();
+}
+
+// ---------------------------------------------------------------- layouts (Rail / Wide / Cockpit)
+// Presentation only, remembered per browser. Wide and Cockpit apply from 1261px; narrower screens keep the stacked desk.
+const LAYOUTS = { rail: "Rail", wide: "Wide", cockpit: "Cockpit" };
+const wideScreen = matchMedia("(min-width: 1261px)");
+// Cockpit lifts the check-in, KPIs and agent activity into the status pane; each goes back to where it came from.
+const cockpitParts = [$("#checkin"), $("#kpis"), $("#now").closest(".card")];
+const cockpitHomes = cockpitParts.map((el) => [el.parentNode, el.nextSibling]);
+function placeCockpit() {
+  const on = document.documentElement.dataset.layout === "cockpit" && wideScreen.matches, pane = $("#cockpit-pane");
+  if (on === !pane.hidden) return;
+  pane.hidden = !on;
+  if (on) pane.append(...cockpitParts);
+  else for (let i = cockpitParts.length - 1; i >= 0; i--) cockpitHomes[i][0].insertBefore(cockpitParts[i], cockpitHomes[i][1]);
+}
+function applyLayout(name) {
+  if (!Object.hasOwn(LAYOUTS, name)) name = "rail";
+  document.documentElement.dataset.layout = name;
+  document.querySelectorAll("[data-layout-pick]").forEach((b) => {
+    const on = b.dataset.layoutPick === name; b.classList.toggle("active", on); b.setAttribute("aria-pressed", String(on)); });
+  placeCockpit();
+}
+function setJournalOpen(open) {
+  document.documentElement.toggleAttribute("data-journal-open", open);
+  $("#btn-journal").setAttribute("aria-pressed", String(open));
+}
+try { applyLayout(localStorage.getItem("qd-layout") || "rail"); setJournalOpen(localStorage.getItem("qd-journal-open") === "1"); } catch { applyLayout("rail"); }
+wideScreen.addEventListener("change", placeCockpit);
+document.addEventListener("click", (e) => {
+  const pick = e.target.closest("[data-layout-pick]");
+  if (!pick) return;
+  applyLayout(pick.dataset.layoutPick);
+  try { localStorage.setItem("qd-layout", pick.dataset.layoutPick); } catch {}
+});
+$("#btn-journal").addEventListener("click", () => {
+  const open = !document.documentElement.hasAttribute("data-journal-open");
+  setJournalOpen(open);
+  try { localStorage.setItem("qd-journal-open", open ? "1" : "0"); } catch {}
+});
+$("#btn-jump").addEventListener("click", openPalette);
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k" && !$("#app").classList.contains("hidden")) { e.preventDefault(); openPalette(); }
+});
+
 document.addEventListener("keydown", (e) => {
   if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || $("#app").classList.contains("hidden")) return;
   const t = e.target;
