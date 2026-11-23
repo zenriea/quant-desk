@@ -99,7 +99,7 @@ caps and broad unleveraged ETFs, plus crypto majors; saved operator settings are
 
 | | Stocks and ETFs (Alpaca data) | Crypto majors (Coinbase public data) |
 |---|---|---|
-| Research bars | 15-minute, regular session only, split- and dividend-adjusted, 2 years | 15-minute, 24/7, 1 year |
+| Research bars | 15-minute, regular session only, split- and dividend-adjusted, 4 years | 15-minute, 24/7, 3 years |
 | Research schedule | Every 2 h while new bars arrive | Every 2 h |
 | Decisions | Each 15-minute bar, ~16 min after it ends (free plan's SIP delay) | Each 15-minute bar |
 | Execution | Same session; orders decided outside it wait for the next open (+5 min), XNAS calendar with holidays and early closes | 24/7 |
@@ -171,6 +171,20 @@ replace gate settings through the authenticated operator API and create an audit
 settings are not silently migrated; the one exception is a saved preset that predates a newer gate,
 which gains that preset's value for it so it keeps its label. Presets affect future research decisions, not existing allocations.
 
+**Re-judging is one-way.** Re-judge re-applies today's gates to an experiment's stored results without
+a new backtest. It is refused when any threshold is looser than the one the experiment was first judged
+under, because loosening a gate after seeing a result picks the bar to fit the score. The first
+judgement is kept in the record and shown in the experiment drawer. Experiments re-judged before the
+first judgement was kept have no baseline, so they cannot be re-judged again. To get forward evidence
+for a near miss, start a manual probe instead.
+
+**History length sets the gates' power.** The sealed test is the last ~25 % of stored history, and the
+deflated PSR needs roughly *test Sharpe × √(test years)* to beat the best of N zero-skill trials. So
+the test window's calendar length matters, not its bar count. The desk keeps 3 years of crypto and 4
+years of stock history (about 9-month and 1-year tests). Older installs extend backwards one symbol
+per tick, and research waits until that finishes. Running fewer experiments per day also keeps N, and
+with it the bar, lower.
+
 | Gate | Exploratory (default) | Strict |
 | --- | --- | --- |
 | Completed test trades | ≥ 8 | ≥ 30 |
@@ -195,7 +209,8 @@ A sustained, timestamped forward-paper record is still required.
   results are clean.
 * **Holdout reuse.** Later experiments are informed by earlier test outcomes. Each experiment
   counts the overlapping test windows and deflates its significance accordingly; this mitigates
-  the problem but doesn't remove it.
+  the problem but doesn't remove it. Trials older than `research.deflation_window_days` stop
+  counting, so a shorter window lowers the bar without making the test cleaner.
 * **Survivorship.** The default NASDAQ universe is today's surviving liquid large caps and broad ETFs, so backtests overstate returns.
   Every experiment compares its sealed-test return with an equal-weight buy-and-hold of the same
   universe at the same average exposure, which inflates by about as much; strict gates require the
@@ -465,9 +480,12 @@ NASDAQ). Research and live decisions now use 15-minute bars; see [US stocks vs. 
   mimicking the SDK's responses.
 * **NASDAQ execution.** No live NASDAQ session was observed (it was a weekend, and there were no
   keys). Session logic is covered by calendar-based tests.
-* **Promotion to live trading with real research results.** No experiment passed every gate on
-  real data during the build, so the allocate → live-trade path was exercised by tests and the
-  execution harness only.
+* **Promotion to live trading with real research results.** On the live desk (Nov 15–23, 2026),
+  none of 80 experiments passed the gates in force when it ran. Two (#42 and #47) were allocated
+  after the gates were loosened and they were re-judged, which this version now refuses. Neither
+  had filled an order by Nov 23. A gate-passing strategy's first live trade has still not been seen.
+  Most ideas lost money on the sealed test: 36 of 44 crypto tests had negative Sharpe, with a median
+  cost drag of 13.6 %, and a live stock probe saw ~16 bp spreads against 2 bp modelled.
 * Multi-day unattended operation, the Caddy TLS profile and the systemd units were not run.
 * Railway itself was not used; the single-container mode was tested locally in Docker as Railway runs it
   (root user, volume at `/data`, `PORT`, `run_all`): health, sandbox, worker crash-restart and graceful stop.

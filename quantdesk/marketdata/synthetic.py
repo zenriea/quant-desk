@@ -30,7 +30,7 @@ class SyntheticProvider(Provider):
         self.venue = venue
 
     def _series(self, sym: str, step: int, start: int, end: int) -> list[Bar]:
-        anchor = 1_700_000_000 - (1_700_000_000 % step)  # late 2023: covers every backfill window
+        anchor = 1_560_000_000 - (1_560_000_000 % step)  # mid-2019: covers every backfill window
         n_total = (end - anchor) // step + 1
         o, h, l, c, v = _path(sym, step, int(n_total))
         first = max(0, (start - anchor + step - 1) // step)

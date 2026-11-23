@@ -125,8 +125,11 @@ def test_rejudge_applies_current_gates_without_new_test(env, monkeypatch):
     research_cycle("NASDAQ")
     e = db.q1("SELECT id, test FROM experiments")
     n_exp = db.q1("SELECT COUNT(*) n FROM experiments")["n"]
-    # operator loosened the gates after the rejection
-    monkeypatch.setattr(research_loop.G, "evaluate", lambda res, g: {"passed": True, "checks": [], "failed": []})
+    # Same thresholds as when it ran (a looser re-judge is refused); the outcome is stubbed to a pass
+    # so the re-judge goes on to a decision.
+    first = db.loads(db.q1("SELECT gates FROM experiments WHERE id=?", (e["id"],))["gates"])
+    passing = [dict(c, **{"pass": True}) for c in first["checks"]]
+    monkeypatch.setattr(research_loop.G, "evaluate", lambda res, g: {"passed": True, "checks": passing, "failed": []})
     db.ex("DELETE FROM strategies")
     out = rejudge_experiment(e["id"])
     assert out["status"] == "done"

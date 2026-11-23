@@ -68,3 +68,31 @@ def evaluate(result: dict, g: dict) -> dict:
     passed = all(x["pass"] for x in checks)
     return {"passed": passed, "checks": checks,
             "failed": [x["name"] for x in checks if not x["pass"]]}
+
+
+def first_judgement(record: dict | None) -> dict | None:
+    """The gate record from an experiment's first judgement (re-judges keep it under 'first_judged')."""
+    if not record:
+        return None
+    return record.get("first_judged") or record
+
+
+def loosened_since(original: dict | None, current: dict) -> list[dict]:
+    """Checks whose threshold in ``current`` is looser than the one recorded in ``original``.
+
+    Re-applying looser thresholds to results that are already known picks the bar after seeing the
+    score, the same leak as peeking at the sealed test. A check that was applied then but is missing
+    now (a gate switched off, such as require_universe_excess) counts as looser."""
+    now = {c["name"]: c for c in current.get("checks", [])}
+    out = []
+    for b in (original or {}).get("checks", []):
+        c = now.get(b["name"])
+        if c is None:
+            out.append({"name": b["name"], "op": b.get("op"), "was": b.get("threshold"), "now": "off"})
+            continue
+        if b.get("threshold") is None or c.get("threshold") is None or isinstance(c["threshold"], bool):
+            continue
+        looser = c["threshold"] > b["threshold"] if c["op"] == "<=" else c["threshold"] < b["threshold"]
+        if looser:
+            out.append({"name": c["name"], "op": c["op"], "was": b["threshold"], "now": c["threshold"]})
+    return out

@@ -85,3 +85,35 @@ def test_research_waits_until_history_extension_finishes(env):
         worker.bars_tick()           # pending extension makes the bar job run every minute, not every 15 min
     assert not ingest.history_pending("CRYPTO", ["BTC-USD", "ETH-USD", "SOL-USD"])
     assert worker.research_blocker("CRYPTO", clock.now()) is None
+
+
+def test_history_extension_saves_chunks_and_resumes_after_a_failure(env):
+    from quantdesk import clock
+    from quantdesk.marketdata import ingest
+    from quantdesk.marketdata.base import DataError
+
+    class Flaky(Counting):
+        fail_from = None
+
+        def fetch_bars(self, symbols, timeframe, start, end):
+            if self.fail_from is not None and len(self.calls) >= self.fail_from:
+                raise DataError("rate limited")
+            return super().fetch_bars(symbols, timeframe, start, end)
+    p = Flaky()
+    ingest.set_provider("CRYPTO", p)
+    ingest.BACKFILL_DAYS["CRYPTO"], real = 90, ingest.BACKFILL_DAYS["CRYPTO"]
+    try:
+        ingest.ingest_bars("CRYPTO", ["BTC-USD"])
+    finally:
+        ingest.BACKFILL_DAYS["CRYPTO"] = real
+    p.fail_from = len(p.calls) + 3          # the regular update, then two extension chunks, then an error
+    ingest.ingest_bars("CRYPTO", ["BTC-USD"])
+    reached = clock.now() - _first("BTC-USD")
+    assert 90 * 86400 + ingest.EXTEND_CHUNK_DAYS * 86400 < reached < (real - 2) * 86400   # saved chunks kept
+    assert ingest.history_pending("CRYPTO", ["BTC-USD"])
+    p.fail_from = None
+    n = len(p.calls)
+    ingest.ingest_bars("CRYPTO", ["BTC-USD"])
+    assert all(c[2] <= clock.now() - reached + 1 for c in p.calls[n + 1:])   # resumes, no re-download
+    assert clock.now() - _first("BTC-USD") > (real - 2) * 86400
+    assert not ingest.history_pending("CRYPTO", ["BTC-USD"])
