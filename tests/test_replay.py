@@ -102,3 +102,48 @@ def test_replay_until_a_review_shows_only_what_was_known_then(env):
     early = replay(s, until=bars[22] + 300)                # bar 22 had not closed: its exit is not known yet
     assert [(r["bar"], r["side"]) for r in early["rows"]] == [(bars[20], "buy")]
     assert len(replay(s)["rows"]) > 2                       # without a cutoff, later bars appear
+
+
+def _strategy_on(venue, symbol, closes):
+    from quantdesk import clock, db
+    from quantdesk.marketdata.freshness import expected_last_bar
+    last = expected_last_bar("CRYPTO", clock.now()) - 10 * 900
+    start = last - (len(closes) - 1) * 900
+    put_bars(symbol, closes, start=start)
+    sid = make_strategy({"universe": [symbol], "entry": "close > 105", "exit": "close < 95"}, allocation=1000,
+                        venue=venue)
+    bars = [start + i * 900 for i in range(len(closes))]
+    db.ex("UPDATE strategies SET activated_at=?, created_at=? WHERE id=?", (bars[19], bars[19], sid))
+    return dict(db.q1("SELECT * FROM strategies WHERE id=?", (sid,))), bars
+
+
+def test_a_replay_until_a_time_ignores_prices_after_it_and_the_stock_feed_delay(env):
+    from quantdesk.agent.replay import replay
+    from quantdesk.marketdata.base import Bar
+    from quantdesk.marketdata.store import upsert_bars
+    # Crypto: entry signal on bar 23, filled at bar 24's open; the review runs while bar 24 is in progress.
+    s, bars = _strategy_on("CRYPTO", "BTC-USD", [100.0] * 23 + [110, 120, 130])
+    until = bars[24] + 450
+    before = replay(s, until=until)
+    entry = next(r for r in before["rows"] if r["bar"] == bars[23])
+    assert entry["shadow"]["fill"]["ts"] == bars[24]                  # the open had happened: the fill counts
+    # Bar 24's close and everything after it are unknown at `until`: rewriting them changes nothing.
+    upsert_bars("BTC-USD", "15m", [Bar(bars[24], 110, 111, 40, 50, 1e7), Bar(bars[25], 50, 51, 5, 10, 1e7)])
+    after = replay(s, until=until)
+    assert after["summary"] == before["summary"] and after["rows"] == before["rows"]
+    # Stocks: bar 23 closed at bars[24] but is published 16 minutes later. Ten minutes in, no signal yet.
+    s, bars = _strategy_on("NASDAQ", "AAPL", [100.0] * 23 + [110, 120, 130])
+    assert all(r["bar"] != bars[23] for r in replay(s, until=bars[24] + 600)["rows"])
+    assert any(r["bar"] == bars[23] for r in replay(s, until=bars[24] + 960)["rows"])
+
+
+def test_an_open_paper_order_is_pending_not_a_match(env):
+    from quantdesk import db
+    from quantdesk.agent.replay import replay
+    sid, bars = _setup()
+    _order(sid, bars[20], "BTC-USD", "buy", status="submitted")     # the backtest filled; paper is still working
+    out = replay(dict(db.q1("SELECT * FROM strategies WHERE id=?", (sid,))))
+    first = out["rows"][0]
+    assert first["match"] == "pending" and first["shadow"]["fill"]
+    assert out["summary"]["pending"] == 1 and out["summary"]["matched"] == 0
+    assert out["first_divergence"] != 0                               # pending is not a divergence either

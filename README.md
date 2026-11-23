@@ -21,7 +21,7 @@ virtual money.
 | KPIs | Equity, P&L **after costs**, exposure and drawdown vs. their limits |
 | Trading pipeline | One sentence on why the desk is or is not trading (naming a closed market when every live strategy is on it), research over the last 7 days (tested → profitable on test → passed gates) next to trading now (funded strategies, probes, open positions), the ideas closest to trading with a **Start manual probe** button, and which gates block ideas most often |
 | Positions | Click a row to see why it entered (written *before* the fill), the exact exit rules, and the exit plan; probe sleeves are labelled |
-| Equity chart | Account vs. QQQ and BTC buy-and-hold of the same $100k, plus excess return, the same comparison against benchmarks held at the account's own exposure (its stock share in QQQ, its crypto share in BTC, the rest in cash, from the previous snapshot), and fees |
+| Equity chart | Account vs. QQQ and BTC buy-and-hold of the same $100k, plus excess return, the same comparison against benchmarks held at the account's own exposure (its stock share in QQQ, its crypto share in BTC, the rest in cash, from the previous snapshot; not shown when a needed benchmark price is missing), and fees |
 | Agent activity | Current activity, open orders and scheduled next actions |
 | Beliefs | Current views, each linked to the experiments or trades that support it (beliefs without verifiable evidence are discarded) |
 | Research | Every experiment: hypothesis, frozen rules, train/validation/test split, metrics, stress tests, gate checklist, leakage notes, decision, lessons; test-window reuse in the deflation lookback and over the whole history; re-judge, start a probe or compare a revision with the experiment it revises (rules, test dates, costs, gates that flipped) from the drawer |
@@ -90,7 +90,10 @@ Observe ─► Investigate ─► Test ─► Challenge ─► Decide ─► Tra
   disagree, either in the signal or in the fill (a paper buy the risk engine rejected while the
   backtest filled counts): the rule values paper trading saw, the same rule on today's stored data,
   when the bar was usable, the expected fill, and the actual fill or the reason there was none.
-  **Replay to this review** cuts it at a review's timestamp, so later trades don't blur what it saw.
+  An order still open, or a backtest fill that falls after the window, is "fill pending": neither a
+  match nor a divergence. **Replay to this review** cuts it at a review's timestamp: signals only
+  from bars published by then (bar close plus the 16-minute stock feed delay), fills only at opens
+  that had happened, and a bar still in progress is marked at its open, so no later price moves it.
 
 "Learning" means the research memory. Each prompt includes prior experiments, their outcomes,
 which gates failed and the recorded lessons, and revisions link to their parent experiment. The

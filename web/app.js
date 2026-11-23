@@ -447,9 +447,11 @@ function renderEquityComparison(rows) {
     : `Chart range · Account ${pct(comparison.account)} · Benchmark ${pct(comparison.benchmark)}`;
   // How much of the gap is just sitting in cash: the benchmark scaled to the desk's own exposure.
   const bs = state.s?.account.benchmark_symbol || "QQQ";
-  $("#equity-matched").textContent = !comparison ? "–" : pct(comparison.matchedDifference).replace("%", " pp");
-  $("#equity-matched-note").textContent = !comparison ? "" :
-    `Average exposure ${pct(comparison.avgExposure, 1, false)}${comparison.cryptoExposure > 0 ? ` (stocks ${pct(comparison.stockExposure, 1, false)}, crypto ${pct(comparison.cryptoExposure, 1, false)})` : ""} · matched benchmark ${pct(comparison.matched)}`;
+  $("#equity-matched").textContent = !comparison || comparison.matchedDifference == null ? "–" : pct(comparison.matchedDifference).replace("%", " pp");
+  const mix = comparison ? `Average exposure ${pct(comparison.avgExposure, 1, false)}${comparison.cryptoExposure > 0 ? ` (stocks ${pct(comparison.stockExposure, 1, false)}, crypto ${pct(comparison.cryptoExposure, 1, false)})` : ""}` : "";
+  $("#equity-matched-note").textContent = !comparison ? "" : comparison.matched == null
+    ? `${mix} · not shown: no ${comparison.matchedMissing.map((m) => m === "stock" ? bs : "BTC-USD").join(" or ")} price for part of the range while the account held that asset`
+    : `${mix} · matched benchmark ${pct(comparison.matched)}`;
   $("#equity-matched-note").title = `Between chart snapshots, the account's stock share of equity is held in ${bs}, its crypto share in BTC-USD, and the rest in cash, using the earlier snapshot's exposure. Approximate: it uses the snapshots shown in the chart range.`;
 }
 function dateSpan(start, end) {
@@ -1364,7 +1366,7 @@ async function openReplay(id, until) {
   if (!r) return;
   const st = r.strategy, sm = r.summary || {}, rows = r.rows || [];
   const first = r.first_divergence == null ? null : rows[r.first_divergence];
-  const label = { both: "same", fill_differs: "fill differs", live_only: "paper only", shadow_only: "backtest only" };
+  const label = { both: "same", pending: "fill pending", fill_differs: "fill differs", live_only: "paper only", shadow_only: "backtest only" };
   const delay = r.timing?.data_delay_seconds ? ` + ${Math.round(r.timing.data_delay_seconds / 60)} min data delay` : "";
   const focus = first ? (() => { const { back, paper } = replaySide(first); return `<div class="section replay-first"><h3>First divergence · ${esc(first.symbol)} ${esc(first.side)}</h3>
     <dl class="spec"><dt>Signal bar</dt><dd>${esc(barText(first.bar))}</dd>
@@ -1375,16 +1377,16 @@ async function openReplay(id, until) {
       ${(first.nearby_notes || []).length ? `<dt>Around that bar</dt><dd><ul class="notes">${first.nearby_notes.map((n) => `<li><span class="muted num">${esc(clock24(n.ts))}</span> ${esc(n.title)}</li>`).join("")}</ul></dd>` : ""}</dl>
     <p class="muted cell-sub">${first.match === "fill_differs" ? "Both sides signalled on this bar; only one filled. Paper's order status says why (risk engine, expiry, liquidity)."
       : "Different rule values on the same bar mean the stored bar changed after paper acted (late or revised data). The same values with no order point at timing: a restart, a data wait or the risk engine."}</p></div>`; })()
-    : `<div class="section"><p>${rows.length ? `Paper trading and the backtest signalled and filled the same way on every bar${r.span?.until ? " up to then" : " so far"}.` : "No signals yet on either side."}</p></div>`;
+    : `<div class="section"><p>${rows.length ? `Paper trading and the backtest signalled and filled the same way on every bar${r.span?.until ? " up to then" : " so far"}${sm.pending ? `, with ${sm.pending} fill${sm.pending === 1 ? "" : "s"} still pending` : ""}.` : "No signals yet on either side."}</p></div>`;
   drawer(`Replay: ${st.name} v${st.version}`, `
     <div class="section"><p class="secondary">${r.span?.bars ?? 0} bars since ${esc(dt(r.span?.start))}. The backtest replays the frozen rules on today's stored bars with modelled costs, filling ${r.timing?.backtest_fill_delay_bars ? `${r.timing.backtest_fill_delay_bars + 1} bars` : "one bar"} after the signal.</p>
       ${r.span?.until ? `<p class="replay-until">Replaying up to <b>${esc(dt(r.span.until))}</b>, as a review then saw it. <a href="#replay-${st.id}">Replay to now</a></p>` : ""}
-      <dl class="test-headline"><div><dt>Same signal and fill</dt><dd>${sm.matched ?? 0}</dd></div><div><dt>Fill differs</dt><dd>${sm.fill_differs ?? 0}</dd></div>
+      <dl class="test-headline"><div><dt>Same signal and fill</dt><dd>${sm.matched ?? 0}</dd></div><div><dt>Fill pending</dt><dd>${sm.pending ?? 0}</dd></div><div><dt>Fill differs</dt><dd>${sm.fill_differs ?? 0}</dd></div>
         <div><dt>Paper only</dt><dd>${sm.live_only ?? 0}</dd></div><div><dt>Backtest only</dt><dd>${sm.shadow_only ?? 0}</dd></div><div><dt>Backtest trades</dt><dd>${sm.shadow_trades ?? 0} <span class="muted">${sm.shadow_return == null ? "" : pct(sm.shadow_return)}</span></dd></div></dl>
       <p><a href="#" data-strat="${st.id}">Back to ${esc(st.name)}</a></p></div>
     ${focus}
     ${rows.length ? `<div class="section"><h3>Every decision</h3><div class="tbl-scroll"><table class="tbl replay-tbl"><thead><tr><th scope="col">Signal bar</th><th scope="col">Symbol</th><th scope="col">Side</th><th scope="col">Backtest</th><th scope="col">Paper</th><th scope="col">Match</th></tr></thead><tbody>
-      ${rows.map((x, i) => { const { back, paper } = replaySide(x); return `<tr class="${x.match !== "both" ? "diverged" : ""}${i === r.first_divergence ? " first" : ""}">
+      ${rows.map((x, i) => { const { back, paper } = replaySide(x); return `<tr class="${!["both", "pending"].includes(x.match) ? "diverged" : ""}${i === r.first_divergence ? " first" : ""}">
         <td class="num">${x.bar == null ? `<span class="muted">${esc(x.live?.reason || "")}</span>` : esc(dt(x.bar))}</td><td>${esc(x.symbol)}</td><td>${esc(x.side)}</td><td>${back}</td><td>${paper}</td>
         <td><span class="match-${esc(x.match)}">${esc(label[x.match])}</span></td></tr>`; }).join("")}</tbody></table></div></div>` : ""}`, `#replay-${st.id}${until ? `-${Math.floor(until)}` : ""}`);
 }

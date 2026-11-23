@@ -20,21 +20,28 @@ export function equityComparison(rows, lastFillTs = null) {
   const uninvested = rows.every((r) => !(r.gross > 0)) && !(lastFillTs >= first.ts);
   // The benchmarks at the desk's own exposure: between snapshots, hold the previous snapshot's stock share
   // of equity in the stock benchmark (QQQ), its crypto share in BTC, and the rest in cash.
-  let matched = 1, stockW = 0, cryptoW = 0, span = 0;
-  const move = (a, b, key) => a[key] > 0 && b[key] > 0 ? b[key] / a[key] - 1 : 0;
+  // A benchmark price missing where the account held that asset class leaves the comparison unknown,
+  // not flat: `matched` is then null rather than a silently cash-like number.
+  let matched = 1, stockW = 0, cryptoW = 0, span = 0, missing = new Set();
+  const move = (a, b, key, w) => {
+    if (!(w > 0)) return 0;
+    if (a[key] > 0 && b[key] > 0) return b[key] / a[key] - 1;
+    missing.add(key); return 0;
+  };
   for (let i = 0; i + 1 < rows.length; i++) {
     const a = rows[i], b = rows[i + 1], dt = b.ts - a.ts;
     if (!(dt > 0)) continue;
     const eq = a.equity > 0 ? a.equity : 0;
     const crypto = eq && a.crypto_gross > 0 ? Math.min(1, a.crypto_gross / eq) : 0;
     const stock = eq && a.gross > 0 ? Math.min(1 - crypto, Math.max(0, (a.gross - (a.crypto_gross || 0)) / eq)) : 0;
-    matched *= 1 + stock * move(a, b, "benchmark_equity") + crypto * move(a, b, "crypto_benchmark_equity");
+    matched *= 1 + stock * move(a, b, "benchmark_equity", stock) + crypto * move(a, b, "crypto_benchmark_equity", crypto);
     stockW += stock * dt; cryptoW += crypto * dt; span += dt;
   }
   const stockExposure = span > 0 ? stockW / span : 0, cryptoExposure = span > 0 ? cryptoW / span : 0;
   return { account, benchmark, difference: account - benchmark, uninvested,
            avgExposure: stockExposure + cryptoExposure, stockExposure, cryptoExposure,
-           matched: matched - 1, matchedDifference: account - (matched - 1) };
+           matchedMissing: [...missing].map((k) => k === "benchmark_equity" ? "stock" : "crypto"),
+           matched: missing.size ? null : matched - 1, matchedDifference: missing.size ? null : account - (matched - 1) };
 }
 
 export function showAnnualizedReturn(window) {

@@ -379,3 +379,17 @@ test("crypto exposure is matched against BTC, not QQQ", () => {
   const mixed = equityComparison([{ ...rows[0], crypto_gross: 50 }, { ...rows[1], benchmark_equity: 110 }], null);
   assert.ok(Math.abs(mixed.matched - (0.5 * 0.1 + 0.5 * 0.2)) < 1e-12);
 });
+
+test("a missing benchmark price where the account was invested suppresses the matched excess return", () => {
+  const rows = [
+    { ts: 0, equity: 100, gross: 100, crypto_gross: 100, benchmark_equity: 100, crypto_benchmark_equity: 100 },
+    { ts: 10, equity: 120, gross: 120, crypto_gross: 120, benchmark_equity: 100, crypto_benchmark_equity: null },
+    { ts: 20, equity: 120, gross: 120, crypto_gross: 120, benchmark_equity: 100, crypto_benchmark_equity: 120 },
+  ];
+  const c = equityComparison(rows, null);
+  assert.equal(c.matched, null); assert.equal(c.matchedDifference, null);
+  assert.deepEqual(c.matchedMissing, ["crypto"]);
+  // A stock-only account does not need BTC prices: the same gap is irrelevant there.
+  const stocks = equityComparison(rows.map((r) => ({ ...r, crypto_gross: 0 })), null);
+  assert.ok(Math.abs(stocks.matched) < 1e-12 && stocks.matchedDifference != null);
+});

@@ -42,14 +42,41 @@ OPEN = ("intent", "submitted", "partially_filled")
 
 def _outcome(s: dict | None, o: dict | None) -> str:
     """Signal agreement first, then execution: a paper buy the risk engine rejected while the backtest
-    filled is a divergence even though both sides signalled on the same bar."""
+    filled is a divergence even though both sides signalled on the same bar. A side that has not had its
+    chance to fill yet (an open paper order, a backtest fill after the window) is ``pending``: neither a
+    match nor a divergence."""
     if not s:
         return "live_only"
     if not o:
         return "shadow_only"
     if not s["executes"] or (s["fill"] is None and s["skip"] is None) or o["status"] in OPEN:
-        return "both"  # one side has not had its chance to fill yet: nothing to compare
+        return "pending"
     return "both" if bool(s["fill"]) == bool(o["fills"]) else "fill_differs"
+
+
+DIVERGED = ("fill_differs", "live_only", "shadow_only")
+
+
+def _as_of(panel: dict, venue: str, until: float) -> tuple[dict, int]:
+    """The panel as it could be known at ``until``: no price stamped after it, no signal before its feed delay.
+
+    Decisions use bars that were published by then (bar close plus the stock feed's SIP delay); their fills
+    use opens that had happened by then. The last of those opens may belong to a bar still in progress, so
+    that bar is marked at its open: no close, high or low from after ``until`` can move the result."""
+    v = VENUES[venue]
+    ts = panel["ts"]
+    delay_s = SIP_DELAY if venue == "NASDAQ" else 0
+    usable = int(np.searchsorted(ts, until - v.bar_seconds - delay_s, side="right"))  # bars [0, usable) decidable
+    opened = int(np.searchsorted(ts, until, side="right"))                             # opens at or before until
+    # A signal on bar t fills at the open of t + 1 + delay; never let one from an unpublished bar fill.
+    end = min(opened, usable + 1 + signal_delay_bars(venue))
+    out = {k: (val[:end] if isinstance(val, np.ndarray) else val) for k, val in panel.items()}
+    for k in ("high", "low", "close"):
+        out[k] = out[k].copy()
+    unfinished = ts[:end] + v.bar_seconds > until
+    for k in ("high", "low", "close"):
+        out[k][unfinished] = np.where(np.isfinite(out["open"][unfinished]), out["open"][unfinished], np.nan)
+    return out, usable
 
 
 def _notes(sid: int, start: float, until: float | None = None) -> list[dict]:
@@ -70,14 +97,16 @@ def replay(strat: dict, until: float | None = None) -> dict:
     params = spec.get("fixed_params") or {}
     bench = settings.get("benchmarks")[venue]
     panel = build_panel(venue, spec["universe"], bench)
-    ts = panel["ts"]
     act = strat["activated_at"] or strat["created_at"]
     end_at = strat["retired_at"] if strat.get("status") == "retired" and strat.get("retired_at") else None
     if until is not None:
         end_at = min(end_at, until) if end_at else until
+    usable = None
+    if end_at:
+        panel, usable = _as_of(panel, venue, end_at)
+    ts = panel["ts"]
     start = int(np.searchsorted(ts, act))
-    # Only bars that had closed by the cutoff, plus the next bar's open, which is when their signals fill.
-    stop = min(len(ts), int(np.searchsorted(ts, end_at - v.bar_seconds, side="right")) + 1) if end_at else len(ts)
+    stop = len(ts)
     syms = panel["symbols"]
     orders = _live_orders(sid, until)
     base = {"strategy": {k: strat[k] for k in ("id", "name", "version", "venue", "status", "allocation")},
@@ -95,6 +124,8 @@ def replay(strat: dict, until: float | None = None) -> dict:
     shadow: dict[tuple, dict] = {}
     open_signal: dict[tuple, tuple] = {}
     for e in events:
+        if usable is not None and e["kind"] == "signal" and e["t"] >= usable:
+            continue  # this bar was not published yet: paper trading could not have known the signal
         sym, bar = syms[e["col"]], int(ts[e["t"]])
         if e["kind"] == "signal":
             key = (bar, sym, e["side"])
@@ -159,7 +190,7 @@ def replay(strat: dict, until: float | None = None) -> dict:
         row["rule_values_now"] = explain(expr, panel, params, t, syms.index(row["symbol"]), v.periods_per_year, market_col)
         explained += 1
     notes = _notes(sid, act, until)
-    first = next((i for i, x in enumerate(rows) if x["match"] != "both"), None)
+    first = next((i for i, x in enumerate(rows) if x["match"] in DIVERGED), None)
     if first is not None and rows[first]["bar"] is not None:
         lo, hi = rows[first]["bar"] - v.bar_seconds, rows[first]["usable_at"] + 3 * v.bar_seconds
         rows[first]["nearby_notes"] = [n for n in notes if lo <= n["ts"] <= hi][:8]
@@ -169,4 +200,5 @@ def replay(strat: dict, until: float | None = None) -> dict:
                         "shadow_only": sum(1 for x in rows if x["match"] == "shadow_only"),
                         "live_only": sum(1 for x in rows if x["match"] == "live_only"),
                         "fill_differs": sum(1 for x in rows if x["match"] == "fill_differs"),
+                        "pending": sum(1 for x in rows if x["match"] == "pending"),
                         "shadow_return": r.metrics["total_return"]}}
