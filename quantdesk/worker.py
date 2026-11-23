@@ -49,6 +49,9 @@ def heartbeat(holder: str) -> bool:
     return n == 1
 
 
+DIVIDEND_CHECK_SEC = 6 * 3600  # announced dividends change rarely; credits land on the ex-date
+
+
 def job_due(name: str, every: float) -> bool:
     r = db.q1("SELECT last_started_at FROM jobs WHERE name=?", (name,))
     return r is None or r["last_started_at"] is None or clock.now() - r["last_started_at"] >= every
@@ -509,6 +512,8 @@ def main() -> None:
             run_job("market_tick", market_tick)
             run_job("bars_tick", bars_tick)
             run_job("signals_tick", signals_tick)
+            if job_due("dividends", DIVIDEND_CHECK_SEC):
+                run_job("dividends", ingest.ingest_dividends)
             ready.set()
         stop.wait(2)
     analyst.join(timeout=30)

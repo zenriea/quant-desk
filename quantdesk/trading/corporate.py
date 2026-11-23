@@ -5,16 +5,19 @@ When Alpaca re-adjusts past bars, the ratio stored/fresh tells us what happened:
     every holding's share count is multiplied by it and its cost basis divided by it, so the
     position's value is unchanged and marks against the new raw quotes stay continuous;
   * a ratio within a few percent of 1 = dividend adjustment: history is replaced, positions
-    are untouched (paper positions do not receive cash dividends - disclosed limitation);
+    are untouched. The cash itself is credited by ``apply_dividend`` from the provider's
+    corporate-actions feed, so paper returns match the dividend-adjusted backtest;
   * anything else = unexplained: history is replaced, positions untouched, and the journal
     asks the operator to review.
 """
 from __future__ import annotations
 
+import math
 from fractions import Fraction
 
-from .. import clock, db
+from .. import clock, db, venues
 from ..agent import journal
+from ..marketdata.base import CashDividend
 
 SPLIT_THRESHOLD = 0.15
 
@@ -81,6 +84,46 @@ def on_history_readjusted(symbol: str, venue: str, ratio: float, bars: int) -> d
         return ev
     journal.write("data", f"{symbol}: price history re-adjusted ({(ratio - 1) * 100:+.2f}%)",
                   f"The provider re-adjusted {symbol}'s history (typically a dividend). Stored bars were replaced "
-                  f"({bars}). Holdings are unchanged; paper positions do not receive cash dividends.",
+                  f"({bars}). Holdings are unchanged; cash dividends are credited separately on their ex-date.",
                   refs={"symbol": symbol}, author="system", dedupe_key=f"readj:{symbol}:{int(clock.now() // 86400)}")
     return ev
+
+
+def apply_dividend(div: CashDividend) -> dict | None:
+    """Credit a cash dividend to every sleeve that held the symbol before its ex-date open.
+
+    Credited on the ex-date (not the payable date) because the dividend-adjusted bars the
+    backtest uses add the dividend back on that date. Applied at most once per (symbol, ex-date);
+    the integrity rebuild replays the credits from the corporate_actions row."""
+    if not (math.isfinite(div.rate) and div.rate > 0):
+        return None
+    cutoff = venues.session_open_on_or_after(div.ex_date)
+    started = float(db.get_meta("account_started_at") or 0)
+    if cutoff > clock.now() or cutoff <= started:
+        return None  # not ex yet, or before this paper account existed
+    from . import ledger
+    with db.tx():
+        for a in db.q("SELECT detail FROM corporate_actions WHERE kind='dividend' AND symbol=?", (div.symbol,)):
+            if (db.loads(a["detail"], {}) or {}).get("ex_date") == div.ex_date:
+                return None
+        held = ledger.holdings_at(cutoff, div.symbol)
+        credits = {}
+        for sid, qty in sorted(held.items()):
+            amount = qty * div.rate
+            ledger.credit_dividend(sid, div.symbol, amount,
+                                   f"{'special ' if div.special else ''}dividend {div.rate:g}/share x {qty:g} "
+                                   f"{div.symbol} (ex {div.ex_date})")
+            credits[str(sid)] = amount
+        db.ex("INSERT INTO corporate_actions(ts, symbol, kind, ratio, detail) VALUES(?,?,?,?,?)",
+              (clock.now(), div.symbol, "dividend", div.rate,
+               db.dumps({"ex_date": div.ex_date, "rate": div.rate, "payable_date": div.payable_date,
+                         "special": div.special, "holders_as_of": cutoff, "credits": credits})))
+    total = sum(credits.values())
+    if credits:
+        journal.write("data", f"{div.symbol}: dividend ${total:,.2f} credited",
+                      f"{div.symbol} went ex-dividend on {div.ex_date} ({'special, ' if div.special else ''}"
+                      f"${div.rate:g} per share, payable {div.payable_date or 'date not given'}). I credited ${total:,.2f} "
+                      f"to {len(credits)} strateg{'y' if len(credits) == 1 else 'ies'} that held it before that "
+                      "session's open, matching the dividend-adjusted prices the backtests use.",
+                      refs={"symbol": div.symbol}, author="system", dedupe_key=f"dividend:{div.symbol}:{div.ex_date}")
+    return {"symbol": div.symbol, "ex_date": div.ex_date, "rate": div.rate, "credits": credits, "total": total}

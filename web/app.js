@@ -857,7 +857,7 @@ async function renderSystem(body, version) {
     <div class="section"><h3>Operating limits</h3>
       <p class="secondary section-lead">Only you can change these; the agent cannot. Gate profile: <b>${esc(sys.gate_profile)}</b>.
         Exploratory admits paper experiments, not validated trading edges. Strict requires stronger screening and a restricted rules language (causal DSL) that prevents looking ahead.
-        Neither profile proves profitability. Restricted rules required: ${sys.settings.gates.require_causal_dsl ? "yes" : "no"}.</p>
+        Neither profile proves profitability. Restricted rules required: ${sys.settings.gates.require_causal_dsl ? "yes" : "no"}. Must beat holding its own universe (survivorship check): ${sys.settings.gates.require_universe_excess ? "yes" : "no"}.</p>
       <div class="button-row"><button class="btn" data-gate-preset="exploratory">Use exploratory gates…</button>
         <button class="btn" data-gate-preset="strict">Use strict gates…</button></div>
       <form id="limits" novalidate>${LIMIT_GROUPS.map(([title, note, groups]) => `<fieldset class="limit-group"><legend>${esc(title)}</legend>

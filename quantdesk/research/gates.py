@@ -24,6 +24,19 @@ def _top5(t: dict, threshold) -> dict:
     return chk
 
 
+def universe_excess(t: dict) -> float | None:
+    """Sealed-test return minus an exposure-matched equal-weight buy-and-hold of the same universe.
+
+    The default universe is today's survivors, which inflates every long backtest on it. Holding
+    the same names passively is inflated just as much, so this difference strips most of that
+    survivorship drift and leaves the timing/selection the rules add."""
+    bench = (t.get("benchmark_universe") or {}).get("total_return")
+    ret = t.get("total_return")
+    if bench is None or ret is None:
+        return None
+    return round(ret - (t.get("exposure") or 0.0) * bench, 5)
+
+
 def evaluate(result: dict, g: dict) -> dict:
     t, v, c = result["test"], result["validation"], result["challenge"]
     checks = [
@@ -36,7 +49,7 @@ def evaluate(result: dict, g: dict) -> dict:
         _g("test_return_cost_x2", c["test_cost_x2"].get("total_return"), ">", g["min_cost_stress_return"],
            "Must survive doubled fees, spread and impact."),
         _g("test_sharpe_delay_1bar", c["test_delay_1bar"].get("sharpe"), ">", g["min_delay_stress_sharpe"],
-           "Must not depend on executing exactly at the next bar."),
+           "Must survive executing one bar later than paper trading can."),
         _g("neighbor_positive_frac", c.get("neighbor_positive_frac"), ">=", g["min_neighbor_positive_frac"],
            "Nearby parameter values should also work (not a lucky point)."),
         _g("subperiod_positive_frac", c.get("subperiod_positive_frac"), ">=", g["min_subperiod_positive_frac"],
@@ -48,6 +61,10 @@ def evaluate(result: dict, g: dict) -> dict:
     if g.get("require_causal_dsl"):
         checks.append(_g("causal_dsl", result.get("strategy_kind") == "dsl", ">=", True,
                          "Strict screening excludes Python: sampled prefix checks cannot prove causality."))
+    if g.get("require_universe_excess"):
+        checks.append(_g("universe_excess_return", universe_excess(t), ">", 0.0,
+                         "Must beat holding its own universe at the same average exposure: survivorship "
+                         "inflates both, so only the rules' added value counts."))
     passed = all(x["pass"] for x in checks)
     return {"passed": passed, "checks": checks,
             "failed": [x["name"] for x in checks if not x["pass"]]}

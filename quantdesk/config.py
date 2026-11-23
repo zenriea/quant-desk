@@ -260,6 +260,7 @@ GATE_PRESETS = {
         "min_neighbor_positive_frac": 0.34, "min_subperiod_positive_frac": 0.34,
         "max_top5_concentration": 1.0, "min_deflated_psr": 0.25,
         "require_causal_dsl": False,
+        "require_universe_excess": False,  # reported in the journal, not required
     },
     # More selective screening, still not a substitute for forward-paper evidence.
     "strict": {
@@ -268,6 +269,7 @@ GATE_PRESETS = {
         "min_neighbor_positive_frac": 0.67, "min_subperiod_positive_frac": 0.75,
         "max_top5_concentration": 0.5, "min_deflated_psr": 0.95,
         "require_causal_dsl": True,
+        "require_universe_excess": True,
     },
 }
 

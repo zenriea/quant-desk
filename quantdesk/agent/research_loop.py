@@ -278,9 +278,21 @@ def research_cycle(venue: str, analyst=None) -> dict:
                   f"Doubled costs: {res['challenge']['test_cost_x2']['total_return']:+.2%}; one-bar delay Sharpe "
                   f"{res['challenge']['test_delay_1bar']['sharpe']:.2f}. Deflated PSR {t['deflated_psr']:.2f} "
                   f"({res['leakage']['n_trials_for_deflation']} trial(s) on this holdout)."
+                  + _universe_note(t, settings.get("gates"))
                   + (f" Failed: {', '.join(gres['failed'])}." if gres["failed"] else ""),
                   refs={"experiment_id": eid, "hypothesis_id": hid}, author="rules")
     return _decide(venue, eid, hid, prop, spec, res, gres, obs, bench, rs, analyst)
+
+
+def _universe_note(t: dict, g: dict) -> str:
+    ex = G.universe_excess(t)
+    if ex is None:
+        return ""
+    note = (f" Versus holding its own universe at the same exposure: {ex:+.2%}"
+            " (survivorship check; the default universe is today's survivors).")
+    if ex <= 0 and not g.get("require_universe_excess"):
+        note += " Warning: no value added over passive holding; the current gates do not require it."
+    return note
 
 
 def _decide(venue, eid, hid, prop, spec, res, gres, obs, bench, rs, analyst) -> dict:

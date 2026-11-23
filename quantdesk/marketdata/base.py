@@ -26,6 +26,15 @@ class Bar:
     volume: float
 
 
+@dataclass
+class CashDividend:
+    symbol: str
+    ex_date: str            # YYYY-MM-DD; holders before that session's open are paid
+    rate: float             # cash per share
+    payable_date: str | None = None
+    special: bool = False
+
+
 class DataError(RuntimeError):
     """Raised when a provider cannot deliver data. Callers must stop dependent actions."""
 
@@ -40,3 +49,7 @@ class Provider:
 
     def fetch_quotes(self, symbols: list[str]) -> dict[str, Quote]:
         raise NotImplementedError
+
+    def fetch_cash_dividends(self, symbols: list[str], start: str, end: str) -> list[CashDividend]:
+        """Cash dividends with an ex-date in [start, end] (YYYY-MM-DD). Venues without them return []."""
+        return []

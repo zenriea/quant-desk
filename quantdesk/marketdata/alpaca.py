@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import time
 
-from .base import Bar, DataError, Provider, Quote
+from .base import Bar, CashDividend, DataError, Provider, Quote
 from .http import get_json
 
 BASE = "https://data.alpaca.markets"
@@ -94,3 +94,29 @@ class AlpacaProvider(Provider):
             except (KeyError, TypeError, ValueError) as e:
                 raise DataError(f"bad snapshot for {sym}: {e}")
         return out
+
+    def fetch_cash_dividends(self, symbols, start, end):
+        """Announced cash dividends from Alpaca's corporate-actions endpoint (market data API)."""
+        params = {"symbols": ",".join(symbols), "types": "cash_dividend", "start": start, "end": end, "limit": 1000}
+        out: list[CashDividend] = []
+        page = None
+        for _ in range(MAX_PAGES):
+            if page:
+                params["page_token"] = page
+            d = get_json(f"{BASE}/v1/corporate-actions", params=params, headers=self.headers)
+            actions = d.get("corporate_actions") if isinstance(d, dict) else None
+            if not isinstance(actions, dict):
+                raise DataError(f"unexpected corporate-actions payload: {str(d)[:200]}")
+            for r in actions.get("cash_dividends") or []:
+                try:
+                    out.append(CashDividend(str(r["symbol"]), str(r["ex_date"]), float(r["rate"]),
+                                            r.get("payable_date"), bool(r.get("special"))))
+                except (KeyError, TypeError, ValueError) as e:
+                    raise DataError(f"bad cash dividend record {str(r)[:200]}: {e}")
+            page = d.get("next_page_token")
+            if not page:
+                break
+            time.sleep(0.35)
+        if page:
+            raise DataError(f"corporate actions exceeded {MAX_PAGES} pages")
+        return [x for x in out if start <= x.ex_date <= end]

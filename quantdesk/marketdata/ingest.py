@@ -261,3 +261,38 @@ def ingest_quotes(venue: str, symbols: list[str]) -> list[dict]:
         if store.set_status(f"quote:{s}", ok, e):
             events.append({"key": f"quote:{s}", "ok": ok, "error": e, "symbol": s})
     return events
+
+
+DIVIDEND_LOOKBACK_DAYS = 30
+
+
+def ingest_dividends(now: float | None = None) -> list[dict]:
+    """Fetch cash dividends for stocks any sleeve held recently and credit those now ex.
+
+    Looks back 30 days, or to just before the last successful check if that is older (worker
+    downtime), but never before the paper account started."""
+    import datetime as dt
+    from ..trading import corporate
+    now = clock.now() if now is None else now
+    started = float(db.get_meta("account_started_at") or now)
+    last_ok = float(db.get_meta("dividends_checked_at") or now)
+    since = max(started, min(now - DIVIDEND_LOOKBACK_DAYS * 86400, last_ok - 2 * 86400))
+    syms = [r["symbol"] for r in db.q("SELECT DISTINCT symbol FROM positions WHERE venue='NASDAQ' "
+                                      "AND (ABS(qty) > 1e-12 OR updated_at >= ?) ORDER BY symbol", (since,))]
+    if not syms:
+        db.set_meta("dividends_checked_at", str(now))
+        return []
+    day = lambda t: dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m-%d")  # noqa: E731
+    try:
+        divs = get_provider("NASDAQ").fetch_cash_dividends(syms, day(since), day(now))
+    except DataError as e:
+        log.warning("dividend check failed: %s", e)
+        return [{"ok": False, "error": str(e)}]
+    out = []
+    for d in sorted(divs, key=lambda d: (d.ex_date, d.symbol)):
+        if d.symbol in syms:
+            r = corporate.apply_dividend(d)
+            if r:
+                out.append(r)
+    db.set_meta("dividends_checked_at", str(now))
+    return out

@@ -201,7 +201,8 @@ def test_missing_neighbor_evidence_still_fails_closed(preset):
     from quantdesk.research import gates
     result = {
         "strategy_kind": "dsl", "validation": {"sharpe": 1},
-        "test": {"sharpe": 1, "n_trades": 100, "deflated_psr": 0.99},
+        "test": {"sharpe": 1, "n_trades": 100, "deflated_psr": 0.99, "total_return": 0.0, "exposure": 0.5,
+                 "benchmark_universe": {"total_return": -0.1}},
         "challenge": {"test_cost_x2": {"total_return": 0.1}, "test_delay_1bar": {"sharpe": 1},
                       "neighbor_positive_frac": None, "subperiod_positive_frac": 1,
                       "top5_concentration_pre_test": 0.3},
