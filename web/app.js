@@ -1,6 +1,6 @@
 // QuantDesk UI. Vanilla JS; every server string is escaped before it touches the DOM.
 import { changeDirection, deskHealth, displayedActivity, equityComparison, equityInRange, formatLimit, friendlyGates, fromDisplay, gateCount, gateLabel,
-  checkinSummary, holdoutLabel, journalMatches, journalPresentation, limitUsage, LIMIT_FIELDS, parseSymbols, sameValue, symbolDiff, showAnnualizedReturn, toDisplay, tradingVerdict, UNIT_SUFFIX } from "./ui-model.mjs?v=audit-fixes";
+  checkinSummary, holdoutLabel, journalMatches, journalPresentation, limitUsage, LIMIT_FIELDS, parseSymbols, sameValue, symbolDiff, showAnnualizedReturn, toDisplay, tradingVerdict, UNIT_SUFFIX } from "./ui-model.mjs?v=redesign-v2";
 
 const $ = (s, el = document) => el.querySelector(s);
 // Viewers (read-only share) see results, never controls, prompts or limits.
@@ -414,7 +414,7 @@ function ensureEquityChart() {
   const mk = (v, style) => chart.addLineSeries({ color: cssVar(v), lineWidth: 1.5, lineStyle: style, priceLineVisible: false, lastValueVisible: false });
   // The account line is ink; it takes the reserved live cyan only while capital is actually deployed.
   const area = () => { const live = (state.s?.positions.length || 0) > 0;
-    return { lineColor: cssVar(live ? "--live" : "--text-primary"), topColor: live ? cssVar("--live-soft") : "rgba(0,0,0,0)", bottomColor: "rgba(0,0,0,0)" }; };
+    return { lineColor: cssVar(live ? "--live" : "--accent"), topColor: live ? cssVar("--live-soft") : "rgba(0,0,0,0)", bottomColor: "rgba(0,0,0,0)" }; };
   const bench = mk("--series-2", 2), btc = mk("--series-3", 1);  // dashed QQQ, dotted BTC  // added first so the account line draws on top
   const acct = chart.addAreaSeries({ ...area(), lineWidth: 2.5, priceLineVisible: false, lastValueVisible: true });
   const c = { chart, acct, bench, btc };
@@ -476,8 +476,8 @@ function renderEquity() {
   });
   const bs = state.s?.account.benchmark_symbol || "QQQ";
   const live = (state.s?.positions.length || 0) > 0;
-  c.acct.applyOptions({ lineColor: cssVar(live ? "--live" : "--text-primary"), topColor: live ? cssVar("--live-soft") : "rgba(0,0,0,0)" });
-  $("#equity-legend").innerHTML = [[live ? "--live" : "--text-primary", "Account (net of costs)", ""], ["--series-2", `${bs} buy & hold`, "dashed"], ["--series-3", "BTC-USD buy & hold", "dotted"]]
+  c.acct.applyOptions({ lineColor: cssVar(live ? "--live" : "--accent"), topColor: live ? cssVar("--live-soft") : "rgba(0,0,0,0)" });
+  $("#equity-legend").innerHTML = [[live ? "--live" : "--accent", "Account (net of costs)", ""], ["--series-2", `${bs} buy & hold`, "dashed"], ["--series-3", "BTC-USD buy & hold", "dotted"]]
     .map(([v, l, k]) => `<span><span class="sw ${k}" style="--sw:var(${v})"></span>${esc(l)}</span>`).join("") +
     `<a class="chart-credit" href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener">Charts: TradingView Lightweight Charts</a>`;
   $("#equity-since").textContent = rows.length ? dateSpan(rows[0].ts, rows.at(-1).ts) : "No recorded marks in this period";
