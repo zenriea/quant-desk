@@ -98,7 +98,7 @@ caps and broad unleveraged ETFs, plus crypto majors; saved operator settings are
 
 | | Stocks and ETFs (Alpaca data) | Crypto majors (Coinbase public data) |
 |---|---|---|
-| Research bars | 15-minute, regular session only, split- and dividend-adjusted, 2 years | 15-minute, 24/7, 1 year |
+| Research bars | 15-minute, regular session only, split- and dividend-adjusted, 4 years | 15-minute, 24/7, 3 years |
 | Research schedule | Every 2 h while new bars arrive | Every 2 h |
 | Decisions | Each 15-minute bar, ~16 min after it ends (free plan's SIP delay) | Each 15-minute bar |
 | Execution | Same session; orders decided outside it wait for the next open (+5 min), XNAS calendar with holidays and early closes | 24/7 |
