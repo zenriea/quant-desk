@@ -173,16 +173,20 @@ def apply_fill(order: dict, qty: float, price: float, fee: float, ref: dict) -> 
     return fid
 
 
-def rebuild_from_fills() -> dict:
-    """Recompute cash and positions from fills + deposits (integrity check)."""
-    deposits = db.q1("SELECT COALESCE(SUM(delta),0) d FROM cash_ledger WHERE kind='deposit'")["d"]
-    c = float(deposits)
+def _replay(until: float | None = None) -> tuple[float, dict[tuple, float]]:
+    """Cash and sleeve positions from deposits, fills, splits and dividend credits (before ``until``)."""
+    args = () if until is None else (until,)
+
+    def before(col: str) -> str:
+        return "" if until is None else f" AND {col} < ?"
+    c = float(db.q1("SELECT COALESCE(SUM(delta),0) d FROM cash_ledger WHERE kind='deposit'" + before("ts"), args)["d"])
     pos: dict[tuple, float] = {}
     # replay fills in id order; each split right after the last fill that existed when it was applied
     fills = [("fill", f["id"], 0, f) for f in
-             db.q("SELECT f.*, o.strategy_id FROM fills f JOIN orders o ON o.id=f.order_id ORDER BY f.id")]
+             db.q("SELECT f.*, o.strategy_id FROM fills f JOIN orders o ON o.id=f.order_id WHERE 1=1"
+                  + before("f.ts") + " ORDER BY f.id", args)]
     splits = [("split", (db.loads(a["detail"], {}) or {}).get("after_fill_id", 0), 1, a)
-              for a in db.q("SELECT * FROM corporate_actions WHERE kind='split' ORDER BY id")]
+              for a in db.q("SELECT * FROM corporate_actions WHERE kind='split'" + before("ts") + " ORDER BY id", args)]
     for kind, _, _, f in sorted(fills + splits, key=lambda e: (e[1], e[2])):
         if kind == "split":
             for k in list(pos):
@@ -197,7 +201,35 @@ def rebuild_from_fills() -> dict:
         else:
             c += f["qty"] * f["price"] - f["fee"]
             pos[k] = pos.get(k, 0.0) - f["qty"]
+    for a in db.q("SELECT detail FROM corporate_actions WHERE kind='dividend'" + before("ts"), args):
+        c += sum(float(v) for v in ((db.loads(a["detail"], {}) or {}).get("credits") or {}).values())
+    return c, pos
+
+
+def rebuild_from_fills() -> dict:
+    """Recompute cash and positions from fills + deposits (integrity check)."""
+    c, pos = _replay()
     return {"cash": c, "positions": {f"{k[0]}:{k[1]}": v for k, v in pos.items() if abs(v) > 1e-10}}
+
+
+def holdings_at(ts: float, symbol: str) -> dict[int, float]:
+    """Shares of ``symbol`` each sleeve held just before ``ts`` (replayed from fills and splits)."""
+    _, pos = _replay(until=ts)
+    return {sid: q for (sid, sym), q in pos.items() if sym == symbol and q > 1e-10}
+
+
+def credit_dividend(strategy_id: int, symbol: str, amount: float, note: str) -> None:
+    """Book a cash dividend to a sleeve: cash in, and counted as that sleeve's realised P&L.
+    Callers hold a transaction and record the matching corporate_actions row in it."""
+    if not math.isfinite(amount) or amount <= 0:
+        raise ValueError("dividend credit must be positive and finite")
+    if db.q1("SELECT 1 FROM positions WHERE strategy_id=? AND symbol=?", (strategy_id, symbol)) is None:
+        raise ValueError(f"no sleeve position row for {strategy_id}:{symbol}")
+    ts = clock.now()
+    db.ex("INSERT INTO cash_ledger(ts, delta, kind, strategy_id, note) VALUES(?,?,?,?,?)",
+          (ts, amount, "dividend", strategy_id, note))
+    db.ex("UPDATE positions SET realized_pnl=realized_pnl+?, updated_at=? WHERE strategy_id=? AND symbol=?",
+          (amount, ts, strategy_id, symbol))
 
 
 def integrity_check() -> dict:
