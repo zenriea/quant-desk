@@ -311,6 +311,59 @@ def test_viewer_session_role_is_stored_server_side(viewer_client):
     assert c.get("/api/state").status_code == 200 and c.get("/api/system").status_code == 403
 
 
+@pytest.fixture()
+def public_client(env, monkeypatch):
+    import importlib
+    monkeypatch.setenv("QD_ADMIN_PASSWORD", "correct horse")
+    monkeypatch.setenv("QD_PUBLIC_VIEW", "1")
+    from quantdesk.config import load_config
+    load_config(reload=True)
+    import quantdesk.api.app as appmod
+    appmod = importlib.reload(appmod)
+    from fastapi.testclient import TestClient
+    return TestClient(appmod.app)
+
+
+def test_public_view_is_read_only_without_a_password(public_client):
+    c = public_client
+    s = c.get("/api/session").json()
+    assert s["authenticated"] and s["role"] == "viewer" and s["anonymous"] and s["public_view"]
+    for path in ("/api/state", "/api/equity", "/api/journal", "/api/experiments", "/api/strategies",
+                 "/api/orders", "/api/fills", "/api/universe"):
+        assert c.get(path).status_code == 200, path
+    for path in ("/api/system", "/api/llm_calls", "/api/llm_calls/1", "/api/questions"):
+        assert c.get(path).status_code == 403, path
+    w = {"X-QD": "1"}
+    for path in ("/api/control/pause", "/api/control/emergency_stop", "/api/gate-presets/strict"):
+        assert c.post(path, headers=w).status_code == 403, path
+    assert c.post("/api/settings/risk", json={"max_gross_pct": 0.5}, headers=w).status_code == 403
+    assert c.post("/api/ask", json={"question": "why?"}, headers=w).status_code == 403
+    from quantdesk import db, settings
+    assert settings.get("agent")["paused"] is not True
+    assert db.q1("SELECT COUNT(*) n FROM web_sessions")["n"] == 0      # visitors get no session row
+
+
+def test_operator_signs_in_over_the_public_view(public_client):
+    c = public_client
+    assert c.post("/api/login", json={"password": "nope"}).status_code == 401
+    assert c.post("/api/login", json={"password": "correct horse"}).json()["role"] == "operator"
+    s = c.get("/api/session").json()
+    assert s["role"] == "operator" and not s["anonymous"]
+    assert c.get("/api/system").status_code == 200
+    assert c.post("/api/control/pause", headers={"X-QD": "1"}).status_code == 200
+    assert c.post("/api/logout", headers={"X-QD": "1"}).status_code == 200
+    assert c.get("/api/session").json()["role"] == "viewer"
+    assert c.get("/api/system").status_code == 403
+
+
+def test_public_view_needs_an_operator_password(env, monkeypatch):
+    monkeypatch.setenv("QD_ADMIN_PASSWORD", "")
+    monkeypatch.setenv("QD_PUBLIC_VIEW", "1")
+    from quantdesk.config import load_config
+    with pytest.raises(ValueError, match="QD_PUBLIC_VIEW"):
+        load_config(reload=True)
+
+
 @pytest.mark.parametrize("admin,viewer", [("correct horse", "correct horse"), ("correct horse", "short"), ("", "just looking around")])
 def test_rejects_unsafe_viewer_password(env, monkeypatch, admin, viewer):
     monkeypatch.setenv("QD_ADMIN_PASSWORD", admin)

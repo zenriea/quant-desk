@@ -7,6 +7,7 @@ Security
   * State-changing requests must carry header ``X-QD: 1`` (blocks cross-site forms).
   * Optional QD_VIEWER_PASSWORD signs in a read-only viewer: results only, no controls,
     limits, audit log or model prompts.
+  * QD_PUBLIC_VIEW=1 gives that same read-only view to anyone without a session.
   * Login attempts are rate limited. Secrets never leave the server.
 """
 from __future__ import annotations
@@ -91,6 +92,8 @@ def require_auth(request: Request) -> str:
         return OPERATOR
     role = _role(request.cookies.get("qd_session"))
     if role is None:
+        if cfg.public_view:
+            return VIEWER
         raise HTTPException(401, "login required")
     return role
 
@@ -181,9 +184,11 @@ def logout(request: Request, response: Response):
 def session(request: Request):
     try:
         role = require_auth(request)
-        return {"authenticated": True, "password_required": bool(cfg.admin_password), "role": role}
     except HTTPException:
         return {"authenticated": False, "password_required": bool(cfg.admin_password)}
+    anonymous = bool(cfg.admin_password) and _role(request.cookies.get("qd_session")) is None
+    return {"authenticated": True, "password_required": bool(cfg.admin_password), "role": role,
+            "anonymous": anonymous, "public_view": cfg.public_view}
 
 
 @app.get("/api/health")
@@ -323,7 +328,7 @@ async def stream(request: Request, after_id: int = Query(0, ge=0)):
         while True:
             if await request.is_disconnected():
                 break
-            if cfg.admin_password and not await run_in_threadpool(_role, request.cookies.get("qd_session")):
+            if cfg.admin_password and not cfg.public_view and not await run_in_threadpool(_role, request.cookies.get("qd_session")):
                 break
             rows = await run_in_threadpool(journal.since, last, 50)
             for r in rows:

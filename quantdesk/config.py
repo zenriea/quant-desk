@@ -76,6 +76,7 @@ class Config:
     # --- web ---
     admin_password: str
     viewer_password: str  # optional second password: a read-only view for people you show results to
+    public_view: bool  # anyone without a session gets the read-only viewer role
     session_secret: str
     bind_host: str
     bind_port: int
@@ -188,6 +189,12 @@ def _trusted_proxies() -> str:
     return proxies
 
 
+def _check_public_view(on: bool, admin: str) -> bool:
+    if on and not admin:
+        raise ValueError("QD_PUBLIC_VIEW needs QD_ADMIN_PASSWORD, so the operator controls stay behind a password")
+    return on
+
+
 def _public_origin() -> str:
     origin = _env("QD_PUBLIC_ORIGIN").rstrip("/")
     if not origin:
@@ -232,6 +239,7 @@ def load_config(reload: bool = False, **overrides) -> Config:
         market_data_mode=_env("QD_MARKET_DATA", "live"),
         admin_password=_check_admin_password(_env("QD_ADMIN_PASSWORD")),
         viewer_password=_check_viewer_password(_env("QD_VIEWER_PASSWORD"), _env("QD_ADMIN_PASSWORD")),
+        public_view=_check_public_view(_env_bool("QD_PUBLIC_VIEW", False), _env("QD_ADMIN_PASSWORD")),
         session_secret=_env("QD_SESSION_SECRET"),
         bind_host=_env("QD_BIND_HOST", "127.0.0.1"),
         bind_port=_env_int("QD_PORT", 8000),

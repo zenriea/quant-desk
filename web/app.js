@@ -217,6 +217,7 @@ function showLogin() {
   stopUpdates(); drawerRequest++; closeDrawer?.({ keepHash: true, restoreFocus: false });
   $("#feed").replaceChildren(); state.journal = [];
   $("#app").classList.add("hidden"); $("#login-view").classList.remove("hidden");
+  $("#login-back").classList.toggle("hidden", !state.publicView);
 }
 $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -224,9 +225,13 @@ $("#login-form").addEventListener("submit", async (e) => {
   catch (err) { $("#login-err").textContent = err.message; }
 });
 $("#btn-logout").addEventListener("click", async () => {
-  try { await api("/api/logout", { method: "POST" }); showLogin(); $("#login-pw").focus(); }
-  catch (err) { fail(err); }
+  try {
+    await api("/api/logout", { method: "POST" });
+    if (state.publicView) await boot(); else { showLogin(); $("#login-pw").focus(); }
+  } catch (err) { fail(err); }
 });
+$("#btn-signin").addEventListener("click", () => { showLogin(); $("#login-pw").focus(); });
+$("#login-back").addEventListener("click", () => { $("#login-err").textContent = ""; boot(); });
 
 // ---------------------------------------------------------------- theme
 function applyTheme(t) {
@@ -255,7 +260,8 @@ function renderBadges(s) {
   const badge = (cls, text, { quiet = false, dot = true, title = "" } = {}) =>
     b.push(`<span class="badge ${cls}${quiet ? " quiet" : ""}"${title ? ` title="${esc(title)}"` : ""}>${dot ? '<span class="dot"></span>' : ""}${text}</span>`);
   badge("paper", "PAPER · no real money", { dot: false });
-  if (!isOperator()) badge("viewer", "VIEW ONLY · results, no controls", { dot: false, title: "Read-only view. Signed in with the viewer password." });
+  if (!isOperator()) badge("viewer", "VIEW ONLY · results, no controls", { dot: false, title: state.anonymous
+    ? "Public read-only view. The operator signs in for controls." : "Read-only view. Signed in with the viewer password." });
   if (s.mode.llm === "demo") badge("warn", "DEMO analyst · no AI configured");
   else badge("ok", `AI: ${esc(s.mode.llm.split(" (")[0])}`, { quiet: true, title: `AI analyst: ${s.mode.llm}` });
   if (s.mode.market_data === "synthetic") badge("warn", "SYNTHETIC market data");
@@ -1731,7 +1737,9 @@ async function boot() {
   try {
   const sess = await fetch("/api/session").then((r) => r.json()).catch(() => ({ authenticated: false }));
   if (!sess.authenticated) { showLogin(); return; }
-  $("#btn-logout").classList.toggle("hidden", !sess.password_required);
+  state.publicView = !!sess.public_view; state.anonymous = !!sess.anonymous;
+  $("#btn-logout").classList.toggle("hidden", !sess.password_required || state.anonymous);
+  $("#btn-signin").classList.toggle("hidden", !state.anonymous);
   state.role = sess.role === "viewer" ? "viewer" : "operator";
   document.documentElement.dataset.role = state.role;
   if (!isOperator() && state.tab === "system") state.tab = "research";
