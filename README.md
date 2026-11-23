@@ -394,7 +394,12 @@ runs.
 ## What was verified while building this, and what wasn't
 
 **Verified**
-* **Automated tests: 103 pass**, covering:
+
+These notes come from the original build, when research ran on hourly bars (and daily bars for
+NASDAQ). Research and live decisions now use 15-minute bars; see [US stocks vs. crypto](#us-stocks-vs-crypto).
+
+* **Automated tests: 317 pass** on the current revision (103 at the original build), plus 4 Playwright
+  browser tests that skip locally without Playwright and run in their own CI job. They cover:
   * ledger math and integrity checks, including split replay
   * split, dividend and unexplained re-adjustment of price history
   * every risk rule
