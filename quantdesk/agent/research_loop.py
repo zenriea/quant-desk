@@ -90,6 +90,11 @@ MECHANISM_STREAK = 3   # this many consecutive finished experiments on one mecha
 EDGE_COST_MULTIPLE = 2.0
 
 
+def min_edge_bps(round_trip_bps: float) -> float:
+    """The smallest edge_bps_per_trade a proposal may state; the prompt shows this exact value."""
+    return round(EDGE_COST_MULTIPLE * round_trip_bps, 1)
+
+
 def validate_trade_economics(prop: dict, spec: dict, venue: str, round_trip_bps: float) -> None:
     """Pre-experiment checks on an LLM proposal: a stated holding period, an edge per trade above the
     round-trip cost, lookbacks explained in time, and no fourth test in a row of one mechanism."""
@@ -97,9 +102,9 @@ def validate_trade_economics(prop: dict, spec: dict, venue: str, round_trip_bps:
     hold, edge = prop.get("holding_period_bars"), prop.get("edge_bps_per_trade")
     if not isinstance(hold, int) or hold < 1:
         raise SpecError("State holding_period_bars: the typical number of bars a trade is held.")
-    if not isinstance(edge, (int, float)) or edge < EDGE_COST_MULTIPLE * round_trip_bps:
+    if not isinstance(edge, (int, float)) or edge < min_edge_bps(round_trip_bps):
         raise SpecError(f"edge_bps_per_trade ({edge}) must be at least {EDGE_COST_MULTIPLE:g}x the round-trip cost of "
-                        f"about {round_trip_bps:.0f} bp (so at least {EDGE_COST_MULTIPLE * round_trip_bps:.0f} bp) at the "
+                        f"about {round_trip_bps:.0f} bp (so at least {min_edge_bps(round_trip_bps):g} bp) at the "
                         f"stated holding period of {hold} bars: the gates double costs, and live spreads run wider "
                         "than modelled. Hold longer so each trade can earn that, or answer no_idea.")
     if not str(prop.get("lookbacks_in_time") or "").strip():
@@ -174,7 +179,7 @@ def research_cycle(venue: str, analyst=None) -> dict:
     ctx = {
         # without these the model proposes high-turnover ideas that lose to fees and can never pass the gates
         "trading_costs": dict(costs, approx_round_trip_bps=round_trip,
-                              min_edge_bps_per_trade=round(EDGE_COST_MULTIPLE * round_trip, 1),
+                              min_edge_bps_per_trade=min_edge_bps(round_trip),
                               note="Every buy+sell pays about approx_round_trip_bps plus market impact. "
                                    "edge_bps_per_trade must be at least min_edge_bps_per_trade."),
         "acceptance_gates": settings.get("gates"),
@@ -534,7 +539,17 @@ def rejudge_experiment(eid: int, analyst=None) -> dict:
     res["strategy_kind"] = e["kind"]
     spec, venue = db.loads(e["spec"]), e["venue"]
     gres = G.evaluate(res, settings.get("gates"))
-    first = G.first_judgement(db.loads(e["gates"], None))
+    stored = db.loads(e["gates"], None)
+    if not (stored or {}).get("first_judged") and db.q1(
+            "SELECT 1 FROM journal WHERE kind='test' AND title LIKE ?", (f"Re-judged experiment {eid} under%",)):
+        # Re-judged before first judgements were kept: the stored record may already reflect looser
+        # gates, so it cannot serve as the baseline.
+        journal.write("system", f"Experiment {eid} not re-judged: its first judgement was not kept",
+                      "This experiment was re-judged before the desk recorded the original gate result, so "
+                      "there is no baseline to check the current gates against. Start a manual probe to collect "
+                      "forward evidence instead.", refs={"experiment_id": eid}, author="rules")
+        return {"status": "refused_no_baseline", "experiment_id": eid}
+    first = G.first_judgement(stored)
     loosened = G.loosened_since(first, gres)
     if loosened:
         detail = "; ".join(f"{x['name']} {x['op']} {x['now']} (was {x['was']})" for x in loosened)
@@ -544,7 +559,7 @@ def rejudge_experiment(eid: int, analyst=None) -> dict:
                       "probe to collect forward evidence instead.",
                       refs={"experiment_id": eid}, author="rules")
         return {"status": "refused_looser", "experiment_id": eid, "loosened": loosened}
-    if first and first.get("checks"):
+    if first:
         gres["first_judged"] = {k: first[k] for k in ("passed", "checks", "failed") if k in first}
     db.ex("UPDATE experiments SET gates=?, status=? WHERE id=?",
           (db.dumps(gres), "passed" if gres["passed"] else "failed", eid))

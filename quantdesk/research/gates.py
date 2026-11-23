@@ -81,12 +81,16 @@ def loosened_since(original: dict | None, current: dict) -> list[dict]:
     """Checks whose threshold in ``current`` is looser than the one recorded in ``original``.
 
     Re-applying looser thresholds to results that are already known picks the bar after seeing the
-    score, the same leak as peeking at the sealed test. Checks without a recorded threshold are skipped."""
-    before = {c["name"]: c for c in (original or {}).get("checks", []) if c.get("threshold") is not None}
+    score, the same leak as peeking at the sealed test. A check that was applied then but is missing
+    now (a gate switched off, such as require_universe_excess) counts as looser."""
+    now = {c["name"]: c for c in current.get("checks", [])}
     out = []
-    for c in current.get("checks", []):
-        b = before.get(c["name"])
-        if b is None or c.get("threshold") is None or isinstance(c["threshold"], bool):
+    for b in (original or {}).get("checks", []):
+        c = now.get(b["name"])
+        if c is None:
+            out.append({"name": b["name"], "op": b.get("op"), "was": b.get("threshold"), "now": "off"})
+            continue
+        if b.get("threshold") is None or c.get("threshold") is None or isinstance(c["threshold"], bool):
             continue
         looser = c["threshold"] > b["threshold"] if c["op"] == "<=" else c["threshold"] < b["threshold"]
         if looser:

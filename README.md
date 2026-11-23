@@ -174,8 +174,9 @@ which gains that preset's value for it so it keeps its label. Presets affect fut
 **Re-judging is one-way.** Re-judge re-applies today's gates to an experiment's stored results without
 a new backtest. It is refused when any threshold is looser than the one the experiment was first judged
 under, because loosening a gate after seeing a result picks the bar to fit the score. The first
-judgement is kept in the record and shown in the experiment drawer. To get forward evidence for a near
-miss, start a manual probe instead.
+judgement is kept in the record and shown in the experiment drawer. Experiments re-judged before the
+first judgement was kept have no baseline, so they cannot be re-judged again. To get forward evidence
+for a near miss, start a manual probe instead.
 
 **History length sets the gates' power.** The sealed test is the last ~25 % of stored history, and the
 deflated PSR needs roughly *test Sharpe × √(test years)* to beat the best of N zero-skill trials. So

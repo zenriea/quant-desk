@@ -1332,7 +1332,7 @@ document.addEventListener("click", async (e) => {
     rj.disabled = true;
     try {
       await api(`/api/control/rejudge_${rj.dataset.rejudge}`, { method: "POST" });
-      toast(`Re-judging experiment #${rj.dataset.rejudge}`, { tone: "good", detail: "Starts within ~15 seconds. You'll get a notification with the decision." });
+      toast(`Re-judging experiment #${rj.dataset.rejudge}`, { tone: "good", detail: "Starts within ~15 seconds. If any gate is looser than when it first ran, it is refused and the journal says why; otherwise you'll get a notification with the decision." });
       if (closeDrawer) closeDrawer();
     } catch (err) { fail(err); rj.disabled = false; }
     return;

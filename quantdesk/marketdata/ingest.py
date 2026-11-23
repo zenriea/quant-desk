@@ -23,6 +23,8 @@ BACKFILL_DAYS = {"CRYPTO": 3 * 365, "NASDAQ": 4 * 365}
 EXTEND_TOLERANCE = 7 * 86400  # history starting within a week of the target counts as complete
 OVERLAP_SECONDS = {"CRYPTO": 3 * 3600, "NASDAQ": 4 * 86400}  # re-fetch recent stored bars to detect re-adjustment
 BACKFILL_BUDGET_SEC = 120  # first downloads per call; the rest resume next tick so quotes/fills keep flowing
+EXTEND_BUDGET_SEC = 30  # history extension per call; it resumes from the oldest stored bar next tick
+EXTEND_CHUNK_DAYS = 30  # one extension request span (~10 Coinbase pages of 15-minute bars)
 ADJUST_TOLERANCE = 0.003  # >0.3% change in an already-stored close = provider re-adjusted history
 _providers: dict[str, Provider] = {}
 _backoff: dict[str, tuple[float, float]] = {}  # key -> (retry_at, current_delay)
@@ -191,12 +193,23 @@ def _extend_history(provider: Provider, venue: str, symbols: list[str], tf: str,
         if first is None:
             continue  # nothing stored yet: the regular backfill handles it
         if first > target + EXTEND_TOLERANCE:
-            try:
-                data = provider.fetch_bars([s], tf, target, int(first))
-            except DataError as e:
-                log.warning("history extension for %s failed: %s", s, e)
-                return  # try again on a later tick
-            store.upsert_bars(s, tf, [b for b in _usable(venue, data.get(s, []), now) if b.ts < first])
+            # Newest chunk first, saved as it arrives, within a time budget: a long extension (years of
+            # crypto) resumes from the stored MIN(ts) on later ticks instead of blocking or restarting.
+            began = time.monotonic()
+            while first > target + EXTEND_TOLERANCE:
+                if time.monotonic() - began > EXTEND_BUDGET_SEC:
+                    return  # resume on a later tick
+                lo = max(target, int(first) - EXTEND_CHUNK_DAYS * 86400)
+                try:
+                    data = provider.fetch_bars([s], tf, lo, int(first))
+                except DataError as e:
+                    log.warning("history extension for %s failed: %s", s, e)
+                    return  # try again on a later tick; chunks already saved are kept
+                older = [b for b in _usable(venue, data.get(s, []), now) if b.ts < first]
+                if not older:
+                    break  # nothing older: the listing (or the provider's history) starts here
+                store.upsert_bars(s, tf, older)
+                first = min(b.ts for b in older)
             db.set_meta(key, str(days))
             log.info("extended %s %s history back to %s days", s, tf, days)
             return

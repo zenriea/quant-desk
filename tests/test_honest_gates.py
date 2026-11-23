@@ -92,3 +92,23 @@ def test_edge_must_cover_twice_the_round_trip_cost(env):
     with pytest.raises(SpecError, match="2x the round-trip cost"):
         validate_trade_economics(prop, spec, "CRYPTO", 57.0)
     validate_trade_economics(dict(prop, edge_bps_per_trade=120), spec, "CRYPTO", 57.0)
+
+
+def test_switching_a_gate_off_counts_as_looser():
+    strict = G.evaluate(_result(), _gates(require_universe_excess=True, require_causal_dsl=True))
+    off = G.evaluate(_result(), _gates(require_universe_excess=False, require_causal_dsl=False))
+    names = {x["name"] for x in G.loosened_since(strict, off)}
+    assert names == {"universe_excess_return", "causal_dsl"}
+    assert G.loosened_since(off, strict) == []      # switching a gate on is stricter
+
+
+def test_rejudge_refused_when_an_earlier_rejudge_left_no_baseline(env):
+    from quantdesk import db
+    from quantdesk.agent import journal
+    from quantdesk.agent.research_loop import rejudge_experiment
+    eid = _experiment_judged_at(0.05)          # the record a pre-change re-judge under loose gates left
+    journal.write("test", f"Re-judged experiment {eid} under current gates (failed)", "old re-judge",
+                  refs={"experiment_id": eid})
+    before = db.q1("SELECT status, gates FROM experiments WHERE id=?", (eid,))
+    assert rejudge_experiment(eid)["status"] == "refused_no_baseline"
+    assert dict(db.q1("SELECT status, gates FROM experiments WHERE id=?", (eid,))) == dict(before)
