@@ -316,3 +316,44 @@ test("window overlap distinguishes recorded zero from missing evidence", () => {
   assert.equal(holdoutLabel(1), "1 overlapping test · lookback not recorded");
   assert.equal(holdoutLabel(29, 60), "29 overlapping tests · 60-day lookback");
 });
+
+import { gateValue, gateThreshold, gateFailCounts, scatterLayout, headroom, paletteMatch } from "../web/ui-model.mjs";
+
+test("gate values read in their own units", () => {
+  assert.equal(gateValue("test_trades", 12.0), "12");
+  assert.equal(gateValue("test_sharpe", -0.314), "−0.31");
+  assert.equal(gateValue("test_return_cost_x2", 0.0234), "+2.3%");
+  assert.equal(gateValue("neighbor_positive_frac", 0.667), "67%");
+  assert.equal(gateValue("deflated_psr", 0.25), "0.25");
+  assert.equal(gateValue("test_sharpe", null), "–");
+  assert.equal(gateThreshold({ name: "top5_concentration", op: "<=", threshold: 1 }), "≤ 100%");
+});
+
+test("gate failure counts ignore unevaluated experiments and unknown gates", () => {
+  const n = gateFailCounts([{ gates: { failed: ["deflated_psr", "test_trades"] } }, { gates: { failed: ["deflated_psr", "causal_dsl"] } }, { gates: null }]);
+  assert.equal(n.deflated_psr, 2);
+  assert.equal(n.test_trades, 1);
+  assert.equal(n.test_sharpe, 0);
+  assert.equal("causal_dsl" in n, false);
+});
+
+test("scatter keeps break-even inside the box and skips untested ideas", () => {
+  const { points, x0, y0 } = scatterLayout([{ test: { sharpe: 1, total_return: 0.1 } }, { test: { sharpe: 2, total_return: 0.2 } }, { test: null }]);
+  assert.equal(points.length, 2);
+  assert.equal(x0, 8); assert.equal(y0, 92);  // all-positive data: zero sits at the lower-left edge
+  assert.ok(points.every((p) => p.x >= 8 && p.x <= 92 && p.y >= 8 && p.y <= 92));
+  assert.deepEqual(scatterLayout([]), { points: [], x0: null, y0: null });
+});
+
+test("headroom shows the share of each cap in use", () => {
+  const h = Object.fromEntries(headroom({ account: { equity: 100000, exposure: 0.4, crypto_gross: 5000, drawdown: -0.05 },
+    limits: { max_gross_pct: 0.8, max_crypto_pct: 0.25, max_total_allocation_pct: 0.8, max_drawdown_pct: 0.1 },
+    budget: { month_spent: 1, monthly_cap: 5 }, strategies: [{ allocation: 20000 }, { allocation: 4000 }] }).map((g) => [g.key, g.used]));
+  assert.deepEqual(h, { gross: 50, crypto: 20, alloc: 30, drawdown: 50, ai: 20 });
+  assert.equal(headroom({}).find((g) => g.key === "ai").used, null);
+});
+
+test("palette needs every word", () => {
+  assert.ok(paletteMatch({ group: "Experiment", label: "#12 Intraday trend BTC" }, "exp trend"));
+  assert.ok(!paletteMatch({ group: "Screen", label: "Research" }, "research btc"));
+});

@@ -264,3 +264,54 @@ export function changeDirection(field, before, after) {
   if (!field.loosens || sameValue(before, after)) return "changes";
   return (after > before) === (field.loosens > 0) ? "loosens" : "tightens";
 }
+
+// ---------------------------------------------------------------- research widgets
+// Gate columns in the order the gate engine evaluates them.
+export const GATE_ORDER = ["test_trades", "test_sharpe", "validation_sharpe", "test_return_cost_x2", "test_sharpe_delay_1bar",
+  "neighbor_positive_frac", "subperiod_positive_frac", "top5_concentration", "deflated_psr"];
+const GATE_FMT = { test_trades: "int", test_return_cost_x2: "pct", neighbor_positive_frac: "frac", subperiod_positive_frac: "frac",
+  top5_concentration: "frac", deflated_psr: "plain" };
+export function gateValue(name, v) {
+  if (v == null || typeof v !== "number" || !Number.isFinite(v)) return "–";
+  const f = GATE_FMT[name] || "signed";
+  if (f === "int") return String(Math.round(v));
+  if (f === "frac") return `${Math.round(v * 100)}%`;
+  if (f === "pct") return `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v * 100).toFixed(1)}%`;
+  if (f === "plain") return v.toFixed(2);
+  return `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(2)}`;
+}
+export const gateThreshold = (c) => `${{ ">=": "≥", ">": ">", "<=": "≤" }[c.op] || c.op} ${gateValue(c.name, c.threshold)}`;
+// name -> check, for one experiment's recorded gate result
+export const gateChecks = (e) => Object.fromEntries((e?.gates?.checks || []).map((c) => [c.name, c]));
+// How many evaluated experiments failed each gate, in GATE_ORDER.
+export function gateFailCounts(rows) {
+  const n = Object.fromEntries(GATE_ORDER.map((g) => [g, 0]));
+  for (const e of rows || []) for (const f of e?.gates?.failed || []) if (f in n) n[f]++;
+  return n;
+}
+// Place points on a 0–100% box. Axes always include zero so the cross-hair means "break even".
+export function scatterLayout(rows, pad = 8) {
+  const pts = (rows || []).filter((e) => Number.isFinite(e?.test?.sharpe) && Number.isFinite(e?.test?.total_return));
+  if (!pts.length) return { points: [], x0: null, y0: null };
+  const xs = pts.map((e) => e.test.sharpe).concat(0), ys = pts.map((e) => e.test.total_return).concat(0);
+  const [xl, xh, yl, yh] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const sx = (v) => pad + (xh === xl ? 0.5 : (v - xl) / (xh - xl)) * (100 - 2 * pad);
+  const sy = (v) => pad + (yh === yl ? 0.5 : (yh - v) / (yh - yl)) * (100 - 2 * pad);
+  return { points: pts.map((e) => ({ e, x: sx(e.test.sharpe), y: sy(e.test.total_return) })), x0: sx(0), y0: sy(0) };
+}
+// Headroom gauges: share of each cap in use, 0–100 (null when the cap is unknown).
+export function headroom(s) {
+  const a = s?.account || {}, L = s?.limits || {}, b = s?.budget || {}, eq = a.equity || 0;
+  const alloc = (s?.strategies || []).reduce((t, x) => t + (x.allocation || 0), 0);
+  const use = (v, cap) => Number.isFinite(v) && Number.isFinite(cap) && cap > 0 ? Math.min(100, Math.max(0, Math.abs(v) / cap * 100)) : null;
+  return [
+    { key: "gross", label: "Gross exposure", used: use(a.exposure, L.max_gross_pct), cap: L.max_gross_pct, unit: "pct", value: a.exposure },
+    { key: "crypto", label: "Crypto exposure", used: use(eq ? a.crypto_gross / eq : 0, L.max_crypto_pct), cap: L.max_crypto_pct, unit: "pct", value: eq ? a.crypto_gross / eq : 0 },
+    { key: "alloc", label: "Allocated", used: use(eq ? alloc / eq : 0, L.max_total_allocation_pct), cap: L.max_total_allocation_pct, unit: "pct", value: eq ? alloc / eq : 0 },
+    { key: "drawdown", label: "Drawdown", used: use(a.drawdown, L.max_drawdown_pct), cap: L.max_drawdown_pct, unit: "pct", value: Math.abs(a.drawdown || 0) },
+    { key: "ai", label: "AI spend (month)", used: use(b.month_spent, b.monthly_cap), cap: b.monthly_cap, unit: "usd", value: b.month_spent },
+  ];
+}
+// Palette matching: every query word must appear in the label or its group.
+export const paletteMatch = (item, q) => String(q || "").toLowerCase().split(/\s+/).filter(Boolean)
+  .every((w) => `${item.group} ${item.label}`.toLowerCase().includes(w));
