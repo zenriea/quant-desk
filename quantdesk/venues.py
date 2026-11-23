@@ -87,6 +87,12 @@ def next_open(epoch: float) -> float:
     return cal.next_open(ts).timestamp()
 
 
+def session_open_on_or_after(date: str) -> float:
+    """Open of the NASDAQ session on ``date`` (YYYY-MM-DD), or of the next session if it is not one."""
+    cal = _xnas()
+    return cal.session_open(cal.date_to_session(pd.Timestamp(date), direction="next")).timestamp()
+
+
 def next_close(epoch: float) -> float:
     """Epoch of the next NASDAQ regular-session close after ``epoch``."""
     return _xnas().next_close(_to_ts(epoch)).timestamp()

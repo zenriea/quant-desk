@@ -84,6 +84,7 @@ export const GATE_LABEL = {
   validation_sharpe: "Validation Sharpe", test_sharpe: "Test Sharpe", test_trades: "Min trades",
   test_return_cost_x2: "2× costs", test_sharpe_delay_1bar: "1-bar delay", neighbor_positive_frac: "Similar settings",
   subperiod_positive_frac: "Sub-periods", top5_concentration: "Top-5 trades", deflated_psr: "Deflated PSR",
+  universe_excess_return: "Beats its universe",
 };
 export const gateLabel = (name) => GATE_LABEL[name] || String(name ?? "").replaceAll("_", " ");
 const GATE_KEYS = Object.keys(GATE_LABEL).sort((a, b) => b.length - a.length);

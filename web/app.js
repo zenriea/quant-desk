@@ -1,6 +1,6 @@
 // QuantDesk UI. Vanilla JS; every server string is escaped before it touches the DOM.
 import { changeDirection, deskHealth, displayedActivity, equityComparison, equityInRange, formatLimit, friendlyGates, fromDisplay, gateCount, gateLabel,
-  checkinSummary, holdoutLabel, journalMatches, journalPresentation, limitUsage, LIMIT_FIELDS, parseSymbols, sameValue, symbolDiff, showAnnualizedReturn, toDisplay, tradingVerdict, UNIT_SUFFIX } from "./ui-model.mjs?v=audit-fixes";
+  checkinSummary, holdoutLabel, journalMatches, journalPresentation, limitUsage, LIMIT_FIELDS, parseSymbols, sameValue, symbolDiff, showAnnualizedReturn, toDisplay, tradingVerdict, UNIT_SUFFIX } from "./ui-model.mjs?v=backtest-parity";
 
 const $ = (s, el = document) => el.querySelector(s);
 // Viewers (read-only share) see results, never controls, prompts or limits.
@@ -857,7 +857,7 @@ async function renderSystem(body, version) {
     <div class="section"><h3>Operating limits</h3>
       <p class="secondary section-lead">Only you can change these; the agent cannot. Gate profile: <b>${esc(sys.gate_profile)}</b>.
         Exploratory admits paper experiments, not validated trading edges. Strict requires stronger screening and a restricted rules language (causal DSL) that prevents looking ahead.
-        Neither profile proves profitability. Restricted rules required: ${sys.settings.gates.require_causal_dsl ? "yes" : "no"}.</p>
+        Neither profile proves profitability. Restricted rules required: ${sys.settings.gates.require_causal_dsl ? "yes" : "no"}. Must beat holding its own universe (survivorship check): ${sys.settings.gates.require_universe_excess ? "yes" : "no"}.</p>
       <div class="button-row"><button class="btn" data-gate-preset="exploratory">Use exploratory gates…</button>
         <button class="btn" data-gate-preset="strict">Use strict gates…</button></div>
       <form id="limits" novalidate>${LIMIT_GROUPS.map(([title, note, groups]) => `<fieldset class="limit-group"><legend>${esc(title)}</legend>

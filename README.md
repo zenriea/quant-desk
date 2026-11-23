@@ -59,9 +59,10 @@ Observe ─► Investigate ─► Test ─► Challenge ─► Decide ─► Tra
 * **Test** (`research/experiment.py`): the parameter grid (≤ 12 combinations) is searched on
   **train only**, then confirmed on validation. The spec and chosen parameters are then **frozen and
   persisted**, and only after that is the sealed **test** window evaluated, exactly once. Fills
-  happen at the next bar's open with half-spread, square-root market impact, venue fees and a cap
-  on participation in average daily volume.
-* **Challenge**: doubled costs, a one-bar execution delay, ±25 % parameter perturbations, four
+  happen at the first bar open paper trading can reach (the next bar for crypto; one bar later for
+  stocks, whose bars arrive ~16 min after they close) with half-spread, square-root market impact,
+  venue fees and a cap on participation in average daily volume, on entries and exits alike.
+* **Challenge**: doubled costs, one more bar of execution delay, ±25 % parameter perturbations, four
   pre-test sub-periods, top-5-trade concentration, and a **Deflated Sharpe** (PSR against the
   expected maximum Sharpe of N zero-skill trials, where N counts earlier experiments from the last
   `research.deflation_window_days` (default 7) whose test windows overlap this one; counting every
@@ -137,6 +138,10 @@ caps and broad unleveraged ETFs, plus crypto majors; saved operator settings are
   holding's share count, cost basis and stop reference are adjusted atomically (value unchanged),
   open orders in that symbol are cancelled for re-sizing, and the integrity rebuild replays the split.
   Dividend-sized changes only refresh history; unexplained jumps are flagged and leave positions alone.
+* **Cash dividends**: every 6 hours the worker reads Alpaca's corporate actions for stocks any
+  strategy held recently. On the ex-date, each strategy that held the stock before that session's
+  open is credited rate × shares (cash and realised P&L), once per symbol and ex-date. This matches
+  the dividend-adjusted bars the backtests use, and the integrity rebuild replays the credits.
 * **Stale data stops dependent actions**: missing or old bars mean no signal evaluation for that
   strategy, and stale quotes mean no fill. Both are journaled once per transition.
 * **Sandbox for model-written code**: AST allowlist, a separate process with a cleared environment,
@@ -163,18 +168,20 @@ caps and broad unleveraged ETFs, plus crypto majors; saved operator settings are
 
 Limits & system labels the current gates **exploratory**, **strict**, or **custom**. Preset buttons
 replace gate settings through the authenticated operator API and create an audit record. Existing
-settings are not silently migrated. Presets affect future research decisions, not existing allocations.
+settings are not silently migrated; the one exception is a saved preset that predates a newer gate,
+which gains that preset's value for it so it keeps its label. Presets affect future research decisions, not existing allocations.
 
 | Gate | Exploratory (default) | Strict |
 | --- | --- | --- |
 | Completed test trades | ≥ 8 | ≥ 30 |
 | Test / validation Sharpe | ≥ 0 / ≥ −0.5 | ≥ 0.5 / ≥ 0.25 |
 | Test return at doubled costs | > −5% | > 0% |
-| Test Sharpe with one-bar delay | > −0.5 | > 0 |
+| Test Sharpe with one more bar of delay | > −0.5 | > 0 |
 | Positive neighbors / sub-periods | ≥ 34% / ≥ 34% | ≥ 67% / ≥ 75% |
 | Top-5-trade concentration | ≤ 100% | ≤ 50% |
 | Deflated PSR score | ≥ 0.25 | ≥ 0.95 |
 | Strategy language | DSL or sampled-check Python | DSL only |
+| Beats its universe (survivorship check) | reported in the journal | test return > average exposure × universe buy-and-hold |
 
 Even strict screening is **not a profitability guarantee**. PSR/deflation uses simplifying sampling
 assumptions; autocorrelation, adaptive holdout reuse, survivorship and LLM hindsight remain concerns.
@@ -190,20 +197,27 @@ A sustained, timestamped forward-paper record is still required.
   counts the overlapping test windows and deflates its significance accordingly; this mitigates
   the problem but doesn't remove it.
 * **Survivorship.** The default NASDAQ universe is today's surviving liquid large caps and broad ETFs, so backtests overstate returns.
+  Every experiment compares its sealed-test return with an equal-weight buy-and-hold of the same
+  universe at the same average exposure, which inflates by about as much; strict gates require the
+  strategy to beat it, and exploratory runs journal a warning when it doesn't. This removes most of
+  the drift but not survivor-driven signals (e.g. momentum among names that later failed is never
+  seen). A real fix needs point-in-time membership and delisted-stock history.
 * **Free-plan data.** Alpaca's free real-time quotes come from IEX only (a few percent of volume),
   so spreads can be wider or one-sided. The simulator then uses a fresh last trade plus a modeled
   spread and labels the fill accordingly. Historical spreads are modeled, not observed. Coinbase
   volume (one venue) is used for liquidity, which is conservative.
-* **Simplifications.** Research and signal evaluation use 15-minute bars; stops are checked on bar closes; dividends on live
-  positions are not credited; queue position and intraday auctions are not modeled. Splits are
+* **Simplifications.** Research and signal evaluation use 15-minute bars; stops are checked on bar closes; dividends are
+  credited on the ex-date rather than the payable date (matching adjusted prices), and only
+  for stocks held within the dividend check's look-back; queue position and intraday auctions are not modeled. Splits are
   *inferred* from re-adjusted price history rather than read from a corporate-actions feed, and only
   standard ratios are applied automatically (anything else is flagged for you).
 * **Cost parameters are assumptions.** Verify the SEC Section 31 rate (it changes) and your fee tier.
-* **Backtest/paper execution differences.** The base stock backtest executes at the next bar's
-  open; free SIP paper signals arrive later. The delay stress is diagnostic, not a fully matched
-  baseline. Backtest sells currently liquidate the full holding rather than applying the paper
-  exchange's per-order ADV cap, and experiments use the backtest's default participation setting.
-  These differences can materially affect results in illiquid symbols.
+* **Backtest/paper execution differences.** Stock backtests fill at the open two bars after the
+  signal bar, which is about two minutes before paper can act (the bar arrives 16 minutes after its
+  close). Signals from a session's last bar fill at the second bar of the next session in the
+  backtest, but at the open + 5 min in paper. Both sides cap each order, entries and exits, at the
+  operator's `max_participation` × ADV. Paper cancels a capped exit's remainder and the next
+  decision cycle re-issues it, while the backtest carries it to the next bar's open.
 * **Strategy reviews.** `max_live_drawdown_pct` compares current sleeve equity to its
   high-water mark sampled at account snapshots and reviews. For positive sleeve equity,
   allocation changes rescale the peak so adding or removing capital alone is not a drawdown.
