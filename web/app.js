@@ -1,7 +1,7 @@
 // QuantDesk UI. Vanilla JS; every server string is escaped before it touches the DOM.
 import { changeDirection, deskHealth, displayedActivity, equityComparison, equityInRange, formatLimit, friendlyGates, fromDisplay, gateCount, gateLabel,
   checkinSummary, holdoutLabel, journalMatches, journalPresentation, limitUsage, LIMIT_FIELDS, parseSymbols, sameValue, symbolDiff, showAnnualizedReturn, toDisplay, tradingVerdict, UNIT_SUFFIX,
-  GATE_ORDER, gateValue, gateThreshold, gateChecks, gateFailCounts, scatterLayout, headroom, paletteMatch } from "./ui-model.mjs?v=redesign-v2-widgets";
+  GATE_ORDER, gateValue, gateThreshold, gateChecks, gateFailCounts, scatterLayout, headroom, paletteMatch } from "./ui-model.mjs?v=redesign-v2-layouts";
 
 const $ = (s, el = document) => el.querySelector(s);
 // Viewers (read-only share) see results, never controls, prompts or limits.
@@ -1800,6 +1800,8 @@ async function paletteItems() {
   const exps = (state.researchRows || []).map((e) => ({ group: "Experiment", label: `#${e.id} ${e.title}`, hint: EXP_STATUS[e.status] || e.status, run: () => setHash(`experiment-${e.id}`) }));
   const strats = (state.s?.strategies || []).map((x) => ({ group: "Strategy", label: `${x.name} v${x.version}`, hint: x.probe ? "probe" : x.status, run: () => setHash(`strategy-${x.id}`) }));
   const actions = [{ group: "Action", label: "Switch light / dark theme", run: () => $("#btn-theme").click() },
+    ...Object.entries(LAYOUTS).map(([k, label]) => ({ group: "Layout", label: `${label} layout`, hint: document.documentElement.dataset.layout === k ? "current" : "",
+      run: () => { applyLayout(k); try { localStorage.setItem("qd-layout", k); } catch {} } })),
     { group: "Action", label: "Keyboard shortcuts", run: showShortcuts },
     ...(isOperator() ? [{ group: "Action", label: "Ask the desk", run: () => { goTo("journal"); $("#ask-input").focus(); } }] : [])];
   return [...screens, ...actions, ...strats, ...exps];
@@ -1833,6 +1835,45 @@ async function openPalette() {
   d.addEventListener("close", () => d.remove());
   draw(); input.focus();
 }
+
+// ---------------------------------------------------------------- layouts (Rail / Wide / Cockpit)
+// Presentation only, remembered per browser. Wide and Cockpit apply from 1261px; narrower screens keep the stacked desk.
+const LAYOUTS = { rail: "Rail", wide: "Wide", cockpit: "Cockpit" };
+const wideScreen = matchMedia("(min-width: 1261px)");
+// Cockpit lifts the check-in, KPIs and agent activity into the status pane; each goes back to where it came from.
+const cockpitParts = [$("#checkin"), $("#kpis"), $("#now").closest(".card")];
+const cockpitHomes = cockpitParts.map((el) => [el.parentNode, el.nextSibling]);
+function placeCockpit() {
+  const on = document.documentElement.dataset.layout === "cockpit" && wideScreen.matches, pane = $("#cockpit-pane");
+  if (on === !pane.hidden) return;
+  pane.hidden = !on;
+  if (on) pane.append(...cockpitParts);
+  else for (let i = cockpitParts.length - 1; i >= 0; i--) cockpitHomes[i][0].insertBefore(cockpitParts[i], cockpitHomes[i][1]);
+}
+function applyLayout(name) {
+  if (!Object.hasOwn(LAYOUTS, name)) name = "rail";
+  document.documentElement.dataset.layout = name;
+  document.querySelectorAll("[data-layout-pick]").forEach((b) => {
+    const on = b.dataset.layoutPick === name; b.classList.toggle("active", on); b.setAttribute("aria-pressed", String(on)); });
+  placeCockpit();
+}
+function setJournalOpen(open) {
+  document.documentElement.toggleAttribute("data-journal-open", open);
+  $("#btn-journal").setAttribute("aria-pressed", String(open));
+}
+try { applyLayout(localStorage.getItem("qd-layout") || "rail"); setJournalOpen(localStorage.getItem("qd-journal-open") === "1"); } catch { applyLayout("rail"); }
+wideScreen.addEventListener("change", placeCockpit);
+document.addEventListener("click", (e) => {
+  const pick = e.target.closest("[data-layout-pick]");
+  if (!pick) return;
+  applyLayout(pick.dataset.layoutPick);
+  try { localStorage.setItem("qd-layout", pick.dataset.layoutPick); } catch {}
+});
+$("#btn-journal").addEventListener("click", () => {
+  const open = !document.documentElement.hasAttribute("data-journal-open");
+  setJournalOpen(open);
+  try { localStorage.setItem("qd-journal-open", open ? "1" : "0"); } catch {}
+});
 $("#btn-jump").addEventListener("click", openPalette);
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k" && !$("#app").classList.contains("hidden")) { e.preventDefault(); openPalette(); }
