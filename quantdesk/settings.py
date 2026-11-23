@@ -11,7 +11,7 @@ import math
 import re
 
 from . import clock, db
-from .config import DEFAULT_SETTINGS, SETTING_BOUNDS, load_config
+from .config import DEFAULT_SETTINGS, GATE_PRESETS, SETTING_BOUNDS, load_config
 
 
 def _merged(key: str) -> dict:
@@ -19,11 +19,22 @@ def _merged(key: str) -> dict:
     row = db.q1("SELECT value FROM settings WHERE key=?", (key,))
     if row:
         stored = db.loads(row["value"], {})
+        if key == "gates" and isinstance(stored, dict):
+            stored = _upgrade_gates(stored)
         if isinstance(base, dict) and isinstance(stored, dict):
             _deep_update(base, stored)
         else:
             base = stored
     return base
+
+
+def _upgrade_gates(stored: dict) -> dict:
+    """Gate settings saved before a preset gained a key keep that preset's meaning."""
+    for preset in GATE_PRESETS.values():
+        missing = {k: v for k, v in preset.items() if k not in stored}
+        if missing and all(stored.get(k) == v for k, v in preset.items() if k in stored):
+            return {**stored, **missing}
+    return stored
 
 
 def _deep_update(dst: dict, src: dict) -> None:
