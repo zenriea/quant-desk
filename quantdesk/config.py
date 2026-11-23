@@ -221,7 +221,7 @@ def load_config(reload: bool = False, **overrides) -> Config:
         llm_api_key=_env("QD_LLM_API_KEY"),
         llm_price_in=_env_float("QD_LLM_PRICE_IN", 5.0),
         llm_price_out=_env_float("QD_LLM_PRICE_OUT", 20.0),
-        llm_model=_env("QD_LLM_MODEL", "claude-opus-5-5" if _resolve_provider() == "anthropic" else ""),
+        llm_model=_env("QD_LLM_MODEL", "claude-sonnet-5-5" if _resolve_provider() == "anthropic" else ""),
         llm_effort=_env("QD_LLM_EFFORT", "medium"),
         llm_fallbacks=_env_bool("QD_LLM_FALLBACKS", True),
         llm_knowledge_cutoff=_env("QD_LLM_KNOWLEDGE_CUTOFF", "2026-06-01"),

@@ -33,7 +33,7 @@ def test_llm_call_records_cost_and_uses_structured_output(env):
     kw = fc.calls[0]
     assert kw["output_config"]["format"]["type"] == "json_schema" and "thinking" not in kw
     row = db.q1("SELECT * FROM llm_calls WHERE id=?", (cid,))
-    assert row["status"] == "ok" and row["cost_usd"] == pytest.approx((1000 * 4 + 500 * 20) / 1e6)
+    assert row["status"] == "ok" and row["cost_usd"] == pytest.approx((1000 * 2 + 500 * 10) / 1e6)  # claude-sonnet-5-5 prices
 
 
 def test_budget_blocks_call_before_it_is_made(env):
