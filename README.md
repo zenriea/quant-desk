@@ -13,6 +13,55 @@ virtual money.
 
 ---
 
+## What I learned
+
+I built this to learn how quantitative research works and to see whether an AI could find a
+trading edge on its own. Over its first nine days live (Nov 15–23, 2026) it didn't find one, and
+how it failed taught me more than a profit would have. The desk is now frozen: it keeps running and
+journaling on the [public site](https://quantdesk-trade.up.railway.app/), but I'm not adding
+features.
+
+**What the records show**
+
+* **80 experiments, no edge that survived honest testing.** 44 crypto and 36 NASDAQ ideas were
+  backtested with costs on a sealed test window. None passed the gates in force when it ran. The
+  two that went live only passed after I loosened the gates and re-judged them, which the desk
+  now refuses to do.
+* **Costs decide almost everything.** 25 of the 44 crypto ideas made money before trading costs;
+  only 3 did after. A crypto round trip costs about 57 bp in fees and spread, and the median crypto
+  trade lost 68 bp net, so the ideas were roughly break-even before fees. Stocks cost about 6 bp a
+  round trip, and the median stock trade lost only 3 bp.
+* **Live trading is worse than the backtest.** The one strategy that traded live (a paper probe)
+  paid spreads of about 16 bp, four times the 4 bp the backtest assumed, and lost 0.47% over 12
+  round trips.
+* **The desk beat QQQ by not trading.** The account ended down 0.01% while QQQ fell 3.8%. That
+  isn't skill: it was in cash.
+* **The AI learned to say no.** It declined to propose an experiment 106 times, 96 of them on
+  crypto, saying fees would eat any edge on 15-minute bars. The data backs that up.
+
+**Lessons**
+
+1. **Costs first.** An idea has to clear its round-trip cost per trade, with room to spare.
+   High-turnover ideas on short bars almost never do.
+2. **Reusing test data fools you.** One candidate's "sealed" test window had already been used by
+   24 earlier experiments. Every look makes a lucky result more likely, so the bar has to rise with
+   each attempt.
+3. **Don't move the goalposts.** Loosening a gate after seeing a result is choosing the bar to fit
+   the score.
+4. **Model the details you'll pay for.** Two bugs made the desk look better than it was: a drawdown
+   limit written as a percentage that could never fire, and backtests filling stock trades a minute
+   before the data existed. Both were found by comparing live records with the code.
+5. **An AI analyst is a fast idea generator, not an oracle.** It proposed plausible ideas quickly,
+   and most of them were wrong. The value came from the tests around it, not the ideas.
+6. **Cheap to run.** Six models were tried as the main analyst (Gemini, GLM, two Nemotron models,
+   Claude Haiku, Claude Sonnet); AI calls cost about $0.49 for the whole period.
+
+**What I'd do differently:** decide on the goal and the costs before writing code, research on
+longer bars where fees matter less, hold out data that no experiment is allowed to see until the
+end, and treat paper results as the only evidence that counts.
+
+---
+
 ## What you see
 
 | Panel | Shows |
