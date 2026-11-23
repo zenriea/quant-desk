@@ -1,6 +1,6 @@
 // QuantDesk UI. Vanilla JS; every server string is escaped before it touches the DOM.
 import { changeDirection, deskHealth, displayedActivity, equityComparison, equityInRange, formatLimit, friendlyGates, fromDisplay, gateCount, gateLabel,
-  checkinSummary, holdoutLabel, journalMatches, journalPresentation, limitUsage, LIMIT_FIELDS, parseSymbols, sameValue, symbolDiff, showAnnualizedReturn, toDisplay, tradingVerdict, UNIT_SUFFIX } from "./ui-model.mjs?v=audit-fixes";
+  checkinSummary, holdoutLabel, journalMatches, journalPresentation, limitUsage, LIMIT_FIELDS, parseSymbols, sameValue, symbolDiff, showAnnualizedReturn, toDisplay, tradingVerdict, UNIT_SUFFIX } from "./ui-model.mjs?v=honest-gates";
 
 const $ = (s, el = document) => el.querySelector(s);
 // Viewers (read-only share) see results, never controls, prompts or limits.
@@ -1215,10 +1215,11 @@ async function openExperiment(id) {
       <div><dt>Historical test window</dt><dd>${holdoutLabel(e.leakage?.holdout_reuse_count, e.leakage?.deflation_window_days)}</dd></div>
       <div><dt>Trades</dt><dd>${t.n_trades ?? "–"}</dd></div></dl>${w?.test ? `<p class="muted cell-sub">${dateSpan(w.test.start, w.test.end)}</p>` : ""}</div>` : ""}
     <div class="section"><h3>Acceptance gates: ${checks.length ? gateCount(checks.length, missed.length) : "not evaluated"}</h3>
+      ${g?.first_judged ? `<p class="muted cell-sub">Re-judged. When it first ran: ${gateCount(g.first_judged.checks?.length || 0, g.first_judged.failed?.length || 0)}${g.first_judged.failed?.length ? ` (missed ${esc(g.first_judged.failed.join(", "))})` : ""}.</p>` : ""}
       ${missed.length ? '<p class="muted cell-sub">Missed checks</p>' + gateRows(missed) : ""}
       ${passed.length ? `<details class="record-details"><summary>${passed.length} passed ${passed.length === 1 ? "check" : "checks"}</summary>${gateRows(passed)}</details>` : ""}</div>
     ${e.test && e.status !== "running" && isOperator() && (!e.strategy || e.strategy.probe) ? `<div class="rejudge-box"><div><b>Re-judge under current gates</b>
-      <p>Re-checks the stored results against today's thresholds. No new backtest and no new look at the sealed test window. If every gate passes, the analyst makes a fresh decision.</p></div>
+      <p>Re-checks the stored results against today's thresholds. No new backtest and no new look at the sealed test window. Refused if any threshold is looser than when this experiment first ran, because that would pick the bar after seeing the score. If every gate passes, the analyst makes a fresh decision.</p></div>
       <button class="btn" data-rejudge="${e.id}">Re-judge #${e.id}</button></div>` : ""}
     ${e.test && e.status !== "running" && isOperator() && (e.operator_probe_blocker === undefined ? (!e.strategy || !["active", "incubating"].includes(e.strategy.status)) : !e.operator_probe_blocker) ? `<div class="rejudge-box probe-box"><div><b>Paper-trade it as a manual probe</b>
       <p>Starts a small, clearly-labelled forward test with ${pct(state.s?.pipeline?.probe.allocation_pct ?? 0.03, 0, false)} of equity for ${state.s?.pipeline?.probe.lifetime_days ?? 14} days.

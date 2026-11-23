@@ -85,6 +85,9 @@ def bar_clock(venue: str) -> dict:
 
 
 MECHANISM_STREAK = 3   # this many consecutive finished experiments on one mechanism forces a different one
+# The cost-stress gate doubles fees, spread and impact, so an edge only just above one round trip fails it.
+# Live paper spreads on IEX quotes have also run several times the modelled half-spread.
+EDGE_COST_MULTIPLE = 2.0
 
 
 def validate_trade_economics(prop: dict, spec: dict, venue: str, round_trip_bps: float) -> None:
@@ -94,9 +97,11 @@ def validate_trade_economics(prop: dict, spec: dict, venue: str, round_trip_bps:
     hold, edge = prop.get("holding_period_bars"), prop.get("edge_bps_per_trade")
     if not isinstance(hold, int) or hold < 1:
         raise SpecError("State holding_period_bars: the typical number of bars a trade is held.")
-    if not isinstance(edge, (int, float)) or edge <= round_trip_bps:
-        raise SpecError(f"edge_bps_per_trade ({edge}) must exceed the round-trip cost of about {round_trip_bps:.0f} bp "
-                        f"at the stated holding period of {hold} bars.")
+    if not isinstance(edge, (int, float)) or edge < EDGE_COST_MULTIPLE * round_trip_bps:
+        raise SpecError(f"edge_bps_per_trade ({edge}) must be at least {EDGE_COST_MULTIPLE:g}x the round-trip cost of "
+                        f"about {round_trip_bps:.0f} bp (so at least {EDGE_COST_MULTIPLE * round_trip_bps:.0f} bp) at the "
+                        f"stated holding period of {hold} bars: the gates double costs, and live spreads run wider "
+                        "than modelled. Hold longer so each trade can earn that, or answer no_idea.")
     if not str(prop.get("lookbacks_in_time") or "").strip():
         raise SpecError(f"Explain each lookback in calendar time in lookbacks_in_time ({bar_clock(venue)}).")
     tags = mechanism_tags(spec)
@@ -169,7 +174,9 @@ def research_cycle(venue: str, analyst=None) -> dict:
     ctx = {
         # without these the model proposes high-turnover ideas that lose to fees and can never pass the gates
         "trading_costs": dict(costs, approx_round_trip_bps=round_trip,
-                              note="Every buy+sell pays about approx_round_trip_bps plus market impact."),
+                              min_edge_bps_per_trade=round(EDGE_COST_MULTIPLE * round_trip, 1),
+                              note="Every buy+sell pays about approx_round_trip_bps plus market impact. "
+                                   "edge_bps_per_trade must be at least min_edge_bps_per_trade."),
         "acceptance_gates": settings.get("gates"),
         "venue": venue, "approved_universe": allowed[venue], "benchmark": bench,
         "timeframe": obs["timeframe"], "market_context": blinded,
@@ -498,7 +505,9 @@ def rejudge_experiment(eid: int, analyst=None) -> dict:
     """Re-apply the CURRENT gates to a finished experiment's stored results.
 
     Nothing is re-backtested and the sealed test window is not opened again, so this
-    adds no deflation trial. Used when the operator loosens gates after a rejection.
+    adds no deflation trial. The current gates must be at least as strict as the ones the
+    experiment was first judged under: loosening a threshold after seeing a result and
+    re-judging it is choosing the bar to fit the score. The first judgement is kept.
     """
     e = db.q1("SELECT * FROM experiments WHERE id=?", (eid,))
     if not e or e["status"] not in ("failed", "passed") or not e["test"]:
@@ -513,6 +522,18 @@ def rejudge_experiment(eid: int, analyst=None) -> dict:
     res["strategy_kind"] = e["kind"]
     spec, venue = db.loads(e["spec"]), e["venue"]
     gres = G.evaluate(res, settings.get("gates"))
+    first = G.first_judgement(db.loads(e["gates"], None))
+    loosened = G.loosened_since(first, gres)
+    if loosened:
+        detail = "; ".join(f"{x['name']} {x['op']} {x['now']} (was {x['was']})" for x in loosened)
+        journal.write("system", f"Experiment {eid} not re-judged: gates are looser than when it ran",
+                      "Re-judging a known result under looser thresholds picks the bar after seeing the score, so "
+                      f"it is refused. Looser now: {detail}. Restore those thresholds to re-judge, or start a manual "
+                      "probe to collect forward evidence instead.",
+                      refs={"experiment_id": eid}, author="rules")
+        return {"status": "refused_looser", "experiment_id": eid, "loosened": loosened}
+    if first and first.get("checks"):
+        gres["first_judged"] = {k: first[k] for k in ("passed", "checks", "failed") if k in first}
     db.ex("UPDATE experiments SET gates=?, status=? WHERE id=?",
           (db.dumps(gres), "passed" if gres["passed"] else "failed", eid))
     journal.write("test", f"Re-judged experiment {eid} under current gates ({'passed' if gres['passed'] else 'failed'})",

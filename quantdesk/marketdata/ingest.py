@@ -14,9 +14,12 @@ from .freshness import bar_closed, bars_current
 
 log = logging.getLogger(__name__)
 
-# 15-minute bars: one year of crypto is ~35k bars (a ~3-month sealed test window still holds ~8.7k
-# bars); two years of regular-session equity bars is ~13k. Longer would bloat the database.
-BACKFILL_DAYS = {"CRYPTO": 365, "NASDAQ": 2 * 365}
+# 15-minute bars. The sealed test is the last ~25% of history, and the deflated-PSR gate's power grows
+# with the test window's CALENDAR length (Sharpe x sqrt(years)), not its bar count. One year of crypto
+# left a ~3-month test that needed an annual Sharpe of ~2.5 to clear 20 trials; three years of crypto
+# (~105k bars) and four years of stock sessions (~26k bars) give ~9-month and ~1-year tests.
+# Installs with shorter history extend backwards one symbol per tick (_extend_history).
+BACKFILL_DAYS = {"CRYPTO": 3 * 365, "NASDAQ": 4 * 365}
 EXTEND_TOLERANCE = 7 * 86400  # history starting within a week of the target counts as complete
 OVERLAP_SECONDS = {"CRYPTO": 3 * 3600, "NASDAQ": 4 * 86400}  # re-fetch recent stored bars to detect re-adjustment
 BACKFILL_BUDGET_SEC = 120  # first downloads per call; the rest resume next tick so quotes/fills keep flowing
