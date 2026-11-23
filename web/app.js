@@ -1291,7 +1291,10 @@ async function openExperiment(id) {
       <dt>Sizing</dt><dd>${kv(spec.sizing)}${spec.stop_loss_pct ? ` · stop ${pct(spec.stop_loss_pct, 0, false)}` : ""}${spec.max_hold_bars ? ` · max hold ${spec.max_hold_bars} bars` : ""}</dd></dl>
       ${spec.kind === "code" ? `<pre class="pre"><code>${esc(spec.code)}</code></pre>` : ""}</div>
     ${tl ? `<div class="section"><h3>Chronological split (test window sealed until the rules were frozen)</h3>${tl}</div>` : ""}</details>
-    ${e.test ? `<details class="record-details section" id="test-details"><summary>Detailed results, benchmarks and stress tests</summary>
+    ${e.test ? `<p class="muted cell-sub section">Fill timing: ${e.leakage?.execution_timing?.version >= 2
+      ? `first bar open at or after the signal bar's close${e.leakage.execution_timing.usable_after_close_seconds ? ` + ${Math.round(e.leakage.execution_timing.usable_after_close_seconds / 60)} min data delay` : ""}.`
+      : `${e.venue === "NASDAQ" ? "open two bars after the signal bar (earlier rule, up to a minute before the bar was published)" : "next bar's open (earlier rule)"}. Stored results are kept as they ran.`}</p>
+    <details class="record-details section" id="test-details"><summary>Detailed results, benchmarks and stress tests</summary>
     <div class="section"><h3>Results (net of fees, spread, impact)</h3>${metricsTable([["Train", e.train, w?.train], ["Validation", e.validation, w?.validation], ["Test", t, w?.test],
       ["Test ×2 costs", ch.test_cost_x2, w?.test], ["Test +1 bar delay", ch.test_delay_1bar, w?.test], [`${t.benchmark_symbol} buy & hold`, t.benchmark_venue, w?.test], ["Universe buy & hold", t.benchmark_universe, w?.test]], { cagr: showAnnualizedReturn(w?.test) })}
       <div class="muted cell-sub" style="margin-top:6px">Probabilistic Sharpe (PSR): ${num(t.psr)} · Deflated PSR: ${num(t.deflated_psr)}. The deflated estimate accounts for trying ${e.leakage?.n_trials_for_deflation ?? "an unknown number of"} ideas (expected best annualised Sharpe from luck: ${num(t.sr_star_annualised)}).</div>
@@ -1379,7 +1382,7 @@ async function openReplay(id, until) {
       : "Different rule values on the same bar mean the stored bar changed after paper acted (late or revised data). The same values with no order point at timing: a restart, a data wait or the risk engine."}</p></div>`; })()
     : `<div class="section"><p>${rows.length ? `Paper trading and the backtest signalled and filled the same way on every bar${r.span?.until ? " up to then" : " so far"}${sm.pending ? `, with ${sm.pending} fill${sm.pending === 1 ? "" : "s"} still pending` : ""}.` : "No signals yet on either side."}</p></div>`;
   drawer(`Replay: ${st.name} v${st.version}`, `
-    <div class="section"><p class="secondary">${r.span?.bars ?? 0} bars since ${esc(dt(r.span?.start))}. The backtest replays the frozen rules on today's stored bars with modelled costs, filling ${r.timing?.backtest_fill_delay_bars ? `${r.timing.backtest_fill_delay_bars + 1} bars` : "one bar"} after the signal.</p>
+    <div class="section"><p class="secondary">${r.span?.bars ?? 0} bars since ${esc(dt(r.span?.start))}. The backtest replays the frozen rules on today's stored bars with modelled costs and fills each signal at the first bar open at or after the signal bar was usable${r.timing?.data_delay_seconds ? ` (its close + ${Math.round(r.timing.data_delay_seconds / 60)} min)` : " (its close)"}.</p>
       ${r.span?.until ? `<p class="replay-until">Replaying up to <b>${esc(dt(r.span.until))}</b>, as a review then saw it. <a href="#replay-${st.id}">Replay to now</a></p>` : ""}
       <dl class="test-headline"><div><dt>Same signal and fill</dt><dd>${sm.matched ?? 0}</dd></div><div><dt>Fill pending</dt><dd>${sm.pending ?? 0}</dd></div><div><dt>Fill differs</dt><dd>${sm.fill_differs ?? 0}</dd></div>
         <div><dt>Paper only</dt><dd>${sm.live_only ?? 0}</dd></div><div><dt>Backtest only</dt><dd>${sm.shadow_only ?? 0}</dd></div><div><dt>Backtest trades</dt><dd>${sm.shadow_trades ?? 0} <span class="muted">${sm.shadow_return == null ? "" : pct(sm.shadow_return)}</span></dd></div></dl>

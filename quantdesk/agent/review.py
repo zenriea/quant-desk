@@ -12,7 +12,7 @@ import traceback
 import numpy as np
 
 from .. import clock, db, settings
-from ..marketdata.freshness import signal_delay_bars
+from ..marketdata.freshness import signal_usable_after
 from ..research import backtest as B
 from ..research.experiment import build_panel
 from ..research.strategy import compute_signals
@@ -59,7 +59,7 @@ def shadow_backtest(strat: dict) -> dict | None:
         return None
     sig = compute_signals(spec, spec.get("fixed_params") or {}, panel)
     r = B.run(spec, panel, sig, settings.get("costs")[venue], start, len(ts), capital=strat["allocation"] or 1.0,
-              delay=signal_delay_bars(venue), max_participation=settings.get("risk")["max_participation"])
+              usable_after=signal_usable_after(venue), max_participation=settings.get("risk")["max_participation"])
     return {"bars": len(ts) - start, "total_return": r.metrics["total_return"], "n_trades": r.metrics["n_trades"],
             "max_drawdown": r.metrics["max_drawdown"]}
 

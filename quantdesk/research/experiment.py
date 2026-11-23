@@ -17,12 +17,18 @@ import math
 import numpy as np
 
 from ..marketdata import store
-from ..marketdata.freshness import signal_delay_bars
+from ..marketdata.freshness import signal_usable_after
 from ..venues import VENUES
 from . import backtest as B
 from . import dsl, metrics
 from .strategy import SpecError, compute_signals, param_grid, spec_hash, validate_spec
 from ..trading import costs as C
+
+
+# Stored with every experiment from this version on (in its leakage record). Earlier experiments have no
+# timing record: they filled at a whole-bar count (NASDAQ: the open two bars after the signal bar, up to a
+# minute before that bar was published). Their stored results are kept as they ran and are not recomputed.
+EXECUTION_TIMING = {"version": 2, "rule": "fill at the first bar open at or after signal bar close + data delay"}
 
 
 class ExperimentError(RuntimeError):
@@ -177,7 +183,7 @@ def run_experiment(spec: dict, costs_cfg: dict, research_cfg: dict, benchmark: s
     warm = required_warmup(spec, spec.get("params") or {})
     W = split_windows(T, warm, research_cfg["train_frac"], research_cfg["val_frac"])
     liq = B.liquidity_arrays(panel, venue)
-    base_delay = signal_delay_bars(venue)  # match when paper trading can first act on a signal
+    usable_after = signal_usable_after(venue)  # fill at the first open paper trading could reach
     sig_cache: dict = {}
 
     def sig_for(p):
@@ -188,7 +194,7 @@ def run_experiment(spec: dict, costs_cfg: dict, research_cfg: dict, benchmark: s
 
     def bt(p, win, cost=costs_cfg, extra_delay=0):
         s, e = W[win] if isinstance(win, str) else win
-        return B.run(spec, panel, sig_for(p), cost, s, e, delay=base_delay + extra_delay, liquidity=liq,
+        return B.run(spec, panel, sig_for(p), cost, s, e, delay=extra_delay, usable_after=usable_after, liquidity=liq,
                      max_participation=max_participation)
 
     # ---- 1. grid search on TRAIN only
@@ -231,7 +237,7 @@ def run_experiment(spec: dict, costs_cfg: dict, research_cfg: dict, benchmark: s
     # ---- 4. FREEZE before touching the test window
     frozen = {"spec_hash": spec_hash(spec), "chosen_params": chosen, "windows": windows,
               "data_end": _ts(panel, T - 1), "max_participation": max_participation,
-              "execution_delay_bars": base_delay}
+              "execution_timing": EXECUTION_TIMING | {"usable_after_close_seconds": usable_after}}
     if on_freeze:
         on_freeze(frozen)
     # ---- 5. sealed TEST (evaluated once)
@@ -263,7 +269,7 @@ def run_experiment(spec: dict, costs_cfg: dict, research_cfg: dict, benchmark: s
     }
     out = {
         "strategy_kind": spec.get("kind", "dsl"),
-        "venue": venue, "spec_hash": frozen["spec_hash"], "execution_delay_bars": base_delay, "windows": windows, "chosen_params": chosen,
+        "venue": venue, "spec_hash": frozen["spec_hash"], "execution_timing": frozen["execution_timing"], "windows": windows, "chosen_params": chosen,
         "grid_results": grid_results,
         "train": _slim(train.metrics),
         "validation": _slim(val.metrics),

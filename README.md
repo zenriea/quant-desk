@@ -238,12 +238,20 @@ A sustained, timestamped forward-paper record is still required.
   *inferred* from re-adjusted price history rather than read from a corporate-actions feed, and only
   standard ratios are applied automatically (anything else is flagged for you).
 * **Cost parameters are assumptions.** Verify the SEC Section 31 rate (it changes) and your fee tier.
-* **Backtest/paper execution differences.** Stock backtests fill at the open two bars after the
-  signal bar, which is about two minutes before paper can act (the bar arrives 16 minutes after its
-  close). Signals from a session's last bar fill at the second bar of the next session in the
-  backtest, but at the open + 5 min in paper. Both sides cap each order, entries and exits, at the
+* **Backtest/paper execution differences.** A backtest fills a signal at the first bar open at or
+  after the moment the signal bar was usable: its close for crypto, its close + 16 minutes (the
+  free-plan SIP delay) for stocks. A stock bar closing at 10:15 ET is usable at 10:31, so its signal
+  fills at the 10:45 open; a signal on a session's last bar (usable at 16:16) fills at the next
+  trading day's 9:30 open, while paper acts at the open + 5 min. The same rule drives research
+  experiments, the daily review's shadow backtest and the live replay. Both sides cap each order, entries and exits, at the
   operator's `max_participation` × ADV. Paper cancels a capped exit's remainder and the next
   decision cycle re-issues it, while the backtest carries it to the next bar's open.
+* **Fill timing before 2026-11-23.** Earlier experiments filled stock signals at the open two bars
+  after the signal bar: a 10:00 bar's signal filled at 10:30, a minute before that bar was published,
+  and a session's last-bar signal filled at the next session's second bar. Their stored results are
+  kept as they ran and are not recomputed. Newer experiments store the rule they ran under
+  (`leakage.execution_timing`, version 2); older ones have none, and the experiment drawer labels
+  each. Re-judging reuses stored results, so compare across the change only by re-running an idea.
 * **Strategy reviews.** `max_live_drawdown_pct` is a positive fraction (0.05 = 5 %). Analysts have
   written it as a percentage (`-3.0` for 3 %), which compared with a fractional drawdown never
   fired. Any value above 1 is now read as a percentage wherever the limit is enforced or shown;

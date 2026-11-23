@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 
 from .. import db, settings
-from ..marketdata.freshness import SIP_DELAY, signal_delay_bars
+from ..marketdata.freshness import SIP_DELAY, signal_usable_after
 from ..research import backtest as B
 from ..research.experiment import build_panel
 from ..research.strategy import compute_signals
@@ -68,8 +68,9 @@ def _as_of(panel: dict, venue: str, until: float) -> tuple[dict, int]:
     delay_s = SIP_DELAY if venue == "NASDAQ" else 0
     usable = int(np.searchsorted(ts, until - v.bar_seconds - delay_s, side="right"))  # bars [0, usable) decidable
     opened = int(np.searchsorted(ts, until, side="right"))                             # opens at or before until
-    # A signal on bar t fills at the open of t + 1 + delay; never let one from an unpublished bar fill.
-    end = min(opened, usable + 1 + signal_delay_bars(venue))
+    # The backtest fills a signal at the first open at or after it became usable, so a signal from a bar
+    # not yet published by `until` can only fill at an open after it: past `end`, never in the window.
+    end = opened
     out = {k: (val[:end] if isinstance(val, np.ndarray) else val) for k, val in panel.items()}
     for k in ("high", "low", "close"):
         out[k] = out[k].copy()
@@ -112,14 +113,15 @@ def replay(strat: dict, until: float | None = None) -> dict:
     base = {"strategy": {k: strat[k] for k in ("id", "name", "version", "venue", "status", "allocation")},
             "span": {"start": act, "end": end_at, "bars": max(0, stop - start), "until": until},
             "timing": {"bar_seconds": v.bar_seconds, "data_delay_seconds": SIP_DELAY if venue == "NASDAQ" else 0,
-                       "backtest_fill_delay_bars": signal_delay_bars(venue)}}
+                       "fill_rule": "first bar open at or after the signal bar's close + data delay"}}
     if stop - start < 2:
         return {**base, "rows": [], "first_divergence": None, "notes": _notes(sid, act, until),
                 "summary": {"shadow_trades": 0, "live_orders": len(orders), "matched": 0}}
     sig = compute_signals(spec, params, panel)
     events: list[dict] = []
     r = B.run(spec, panel, sig, settings.get("costs")[venue], start, stop, capital=strat["allocation"] or 1.0,
-              delay=signal_delay_bars(venue), max_participation=settings.get("risk")["max_participation"], events=events)
+              usable_after=signal_usable_after(venue), max_participation=settings.get("risk")["max_participation"],
+              events=events)
     # Shadow decisions keyed by (signal bar, symbol, side); fills follow their signal in order.
     shadow: dict[tuple, dict] = {}
     open_signal: dict[tuple, tuple] = {}

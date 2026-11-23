@@ -39,8 +39,11 @@ def liquidity_arrays(panel: dict, venue: str, lookback: int | None = None):
 
 def run(spec: dict, panel: dict, sig: Signals, costs_cfg: dict, start: int, end: int,
         capital: float = 100_000.0, delay: int = 0, liquidity=None,
-        max_participation: float = 0.01, events: list | None = None) -> BTResult:
-    """``events``, when given, receives one dict per signal, fill and skipped order (for the live replay)."""
+        max_participation: float = 0.01, events: list | None = None, usable_after: int = 0) -> BTResult:
+    """A signal on bar t is usable ``usable_after`` seconds after the bar closes (the venue's data delay;
+    see ``freshness.signal_usable_after``) and fills at the first bar OPEN at or after that moment, which
+    crosses session and weekend gaps. ``delay`` adds whole bars on top (the +1-bar stress test).
+    ``events``, when given, receives one dict per signal, fill and skipped order (for the live replay)."""
     venue = spec["venue"]
     v = VENUES[venue]
     syms = panel["symbols"]
@@ -64,6 +67,9 @@ def run(spec: dict, panel: dict, sig: Signals, costs_cfg: dict, start: int, end:
     slip_paid = 0.0
     last_mark = np.zeros(N)
     sub = StepView(sig, cols)  # built once: slicing per bar made long histories quadratic
+    ts_all = np.asarray(panel["ts"], dtype=np.int64)
+    # First bar whose open is at or after bar t's close + data delay: the earliest open a signal can reach.
+    eligible = np.searchsorted(ts_all, ts_all + v.bar_seconds + int(usable_after), side="left")
 
     for t in range(start, end):
         # 1) execute orders due at this bar's open
@@ -154,7 +160,7 @@ def run(spec: dict, panel: dict, sig: Signals, costs_cfg: dict, start: int, end:
             break
         sub_states = [states[c] for c in cols]
         res = step(spec, sub_states, t, sub, cls[t, cols])
-        due = t + 1 + delay
+        due = int(eligible[t]) + delay
         if events is not None:
             for k, reason in res.exit:
                 events.append({"t": t, "kind": "signal", "side": "sell", "col": cols[k], "reason": reason,

@@ -285,6 +285,7 @@ def research_cycle(venue: str, analyst=None) -> dict:
                              cfg.llm_knowledge_cutoff, on_freeze=on_freeze, llm_authored=(author == "llm"),
                              max_participation=settings.get("risk")["max_participation"])
         res["leakage"]["deflation_window_days"] = days
+        res["leakage"]["execution_timing"] = res["execution_timing"]  # which fill rule these results ran under
     except (ExperimentError, Exception) as e:
         log.error("experiment %s failed: %s", eid, traceback.format_exc())
         db.ex("UPDATE experiments SET status='error', error=?, completed_at=? WHERE id=?", (str(e)[:1000], clock.now(), eid))
