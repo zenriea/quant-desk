@@ -33,13 +33,13 @@ def test_llm_call_records_cost_and_uses_structured_output(env):
     kw = fc.calls[0]
     assert kw["output_config"]["format"]["type"] == "json_schema" and "thinking" not in kw
     row = db.q1("SELECT * FROM llm_calls WHERE id=?", (cid,))
-    assert row["status"] == "ok" and row["cost_usd"] == pytest.approx((1000 * 2 + 500 * 10) / 1e6)  # claude-sonnet-5-5 prices
+    assert row["status"] == "ok" and row["cost_usd"] == pytest.approx((1000 * 0.10 + 500 * 0.50) / 1e6)  # claude-haiku-5-5 prices
 
 
 def test_budget_blocks_call_before_it_is_made(env):
     from quantdesk import settings
     from quantdesk.agent.llm import LLM, BudgetExceeded
-    settings.operator_update("budget", {"daily_usd": 0.01})
+    settings.operator_update("budget", {"daily_usd": 0.001})
     fc = FakeClient([{}])
     with pytest.raises(BudgetExceeded):
         LLM(fc).call("hypothesis", "sys", "user", {"type": "object"})

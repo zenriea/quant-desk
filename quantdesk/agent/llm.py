@@ -215,7 +215,7 @@ class LLM:
     def model(self) -> str:
         if self.route:
             return self.route["model"]
-        return self.cfg.llm_model or ("claude-sonnet-5-5" if self.provider == "anthropic" else "unset")
+        return self.cfg.llm_model or ("claude-haiku-5-5" if self.provider == "anthropic" else "unset")
 
     # -- shared bookkeeping
     def _precheck(self, purpose: str, system: str, user: str, max_tokens: int) -> None:
